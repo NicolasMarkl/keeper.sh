@@ -1019,7 +1019,6 @@ export {
   SyncLimitError,
   SyncNotFoundError,
   SyncStaleError,
-  EMPTY_SYNC_DEFINITION,
   SyncValidationError,
   assertSyncContentAllowed,
   buildSyncDetail,
