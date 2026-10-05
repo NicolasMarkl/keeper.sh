@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SYNC_SETTINGS, compileSyncRules } from "@keeper.sh/data-schemas";
 import {
+  excludeWithdrawnInstances,
   isEventInDestinationReconciliationWindow,
   projectSyncableEvent,
   shouldExcludeSyncEvent,
 } from "../../../src/core/events/events";
+import { materializeRecurrenceEvents } from "../../../src/core/events/recurrence-materializer";
+import type { SyncableEvent } from "../../../src/core/types";
 
 const createEvent = (overrides: Partial<{
   excludeAllDayEvents: boolean;
@@ -201,5 +204,42 @@ describe("projectSyncableEvent", () => {
       summary: "OOO",
     });
     expect(projectSyncableEvent(createRow({ title: "Lunch" }), rules)).toEqual({ outcome: "copy", summary: "Work" });
+  });
+});
+
+describe("excludeWithdrawnInstances", () => {
+  const window = { end: new Date("2026-02-01T00:00:00.000Z"), start: new Date("2026-01-01T00:00:00.000Z") };
+  const master: SyncableEvent = {
+    calendarId: "calendar-1",
+    calendarName: "Work",
+    calendarUrl: null,
+    endTime: new Date("2026-01-05T10:00:00.000Z"),
+    id: "master",
+    recurrenceRule: { count: 4, frequency: "WEEKLY" },
+    sourceEventUid: "team-sync",
+    startTime: new Date("2026-01-05T09:00:00.000Z"),
+    summary: "Team sync",
+  };
+  // The edited 12 January instance ("Team sync – HR review") was skipped by a title rule.
+  const skippedEdit = { calendarId: "calendar-1", recurrenceId: new Date("2026-01-12T09:00:00.000Z"), sourceEventUid: "team-sync" };
+  const starts = (events: SyncableEvent[]) =>
+    materializeRecurrenceEvents(events, window).map((event) => event.startTime.toISOString());
+
+  it("keeps the series from filling a skipped edit's slot with its original occurrence", () => {
+    expect(starts([master])).toContain("2026-01-12T09:00:00.000Z");
+    expect(starts(excludeWithdrawnInstances([master], [skippedEdit]))).toEqual([
+      "2026-01-05T09:00:00.000Z",
+      "2026-01-19T09:00:00.000Z",
+      "2026-01-26T09:00:00.000Z",
+    ]);
+  });
+
+  it("leaves other series and other calendars' series alone", () => {
+    const otherSeries = { ...master, id: "other", sourceEventUid: "standup" };
+    const otherCalendar = { ...master, calendarId: "calendar-2", id: "elsewhere" };
+    const [, untouchedSeries, untouchedCalendar] = excludeWithdrawnInstances([master, otherSeries, otherCalendar], [skippedEdit]);
+
+    expect(untouchedSeries).toBe(otherSeries);
+    expect(untouchedCalendar).toBe(otherCalendar);
   });
 });

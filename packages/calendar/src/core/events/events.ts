@@ -266,6 +266,41 @@ const getPausedSourceCalendarIds = async (
   return new Set(pairs.map((pair) => pair.sourceCalendarId));
 };
 
+interface WithdrawnInstance {
+  calendarId: string;
+  recurrenceId: Date;
+  sourceEventUid: string;
+}
+
+const getSeriesKey = (event: Pick<SyncableEvent, "calendarId" | "sourceEventUid">): string =>
+  JSON.stringify([event.calendarId, event.sourceEventUid]);
+
+// An edited instance still holds its slot in the series when a rule keeps it from copying, so the slot is excluded.
+// Otherwise the series would fill it with its original, unedited occurrence.
+const excludeWithdrawnInstances = (
+  events: SyncableEvent[],
+  withdrawn: readonly WithdrawnInstance[],
+): SyncableEvent[] => {
+  if (withdrawn.length === 0) {
+    return events;
+  }
+  const slotsBySeries = new Map<string, Date[]>();
+  for (const instance of withdrawn) {
+    const seriesKey = getSeriesKey(instance);
+    slotsBySeries.set(seriesKey, [...(slotsBySeries.get(seriesKey) ?? []), instance.recurrenceId]);
+  }
+  return events.map((event) => {
+    if (!event.recurrenceRule || event.recurrenceId) {
+      return event;
+    }
+    const slots = slotsBySeries.get(getSeriesKey(event));
+    if (!slots) {
+      return event;
+    }
+    return { ...event, exceptionDates: [...(event.exceptionDates ?? []), ...slots] };
+  });
+};
+
 const createSourceOutcome = (): SourceProjectionOutcome => ({ copied: 0, skipped: 0, skippedBy: {} });
 
 const recordSkip = (
@@ -377,6 +412,7 @@ const getEventsForCalendarsWithDiagnostics = async (
   let skippedByRuleCount = 0;
   let unmatchedByRuleCount = 0;
   const sourceOutcomes: Record<string, SourceProjectionOutcome> = {};
+  const withdrawnInstances: WithdrawnInstance[] = [];
 
   for (const result of results) {
     if (result.sourceEventUid === null) {
@@ -385,6 +421,9 @@ const getEventsForCalendarsWithDiagnostics = async (
     }
     const sourceRules = rulesBySourceCalendarId.get(result.calendarId) ?? [];
     const projection = projectSyncableEvent(result, sourceRules);
+    if (projection.outcome !== "copy" && result.recurrenceId) {
+      withdrawnInstances.push({ calendarId: result.calendarId, recurrenceId: result.recurrenceId, sourceEventUid: result.sourceEventUid });
+    }
     if (projection.outcome === "working_location") {
       excludedBySyncPolicyCount += 1;
       continue;
@@ -442,7 +481,7 @@ const getEventsForCalendarsWithDiagnostics = async (
    */
   const overBudgetSourceEventStateIds: string[] = [];
   const overBudgetSourceEventUids: string[] = [];
-  const events = materializeRecurrenceEvents(syncableEvents, {
+  const events = materializeRecurrenceEvents(excludeWithdrawnInstances(syncableEvents, withdrawnInstances), {
     end: syncWindow.timeMax,
     start: syncWindow.timeMin,
   }, {
@@ -497,6 +536,7 @@ const getEventsForDestination = async (
 };
 
 export {
+  excludeWithdrawnInstances,
   getEventsForCalendarsWithDiagnostics,
   getEventsForDestination,
   getMappedSourceCalendarIds,
