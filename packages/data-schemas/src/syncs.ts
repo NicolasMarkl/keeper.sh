@@ -256,6 +256,12 @@ const withPrivacy = (actions: RuleAction[], markPrivate: boolean): RuleAction[] 
   return [...actions, { kind: "mark_private" }];
 };
 
+// A rule starts from Share As, so what Share As hides stays hidden; the rule's own rename replaces Share As's.
+const onShareAs = (actions: RuleAction[], shareAs: RuleAction[]): RuleAction[] => {
+  const renames = actions.some((action) => action.kind === "rename");
+  return [...shareAs.filter((action) => !renames || action.kind !== "rename"), ...actions];
+};
+
 // Never Copy first so a skip toggle is a guarantee; Share As last so nothing lands behind the catch-all.
 const compileSyncRules = (settings: SyncSettings): CompiledSyncRule[] => {
   const rules: CompiledSyncRule[] = [];
@@ -278,13 +284,14 @@ const compileSyncRules = (settings: SyncSettings): CompiledSyncRule[] => {
       name: "Titled words",
     });
   }
+  const shareAs = shareAsActions(settings.shareAs, settings.busyTitle);
   for (const rule of settings.rules) {
     if (rule.conditions.length > 0 && rule.actions.length > 0) {
-      rules.push({ ...rule, actions: withPrivacy(rule.actions, settings.markPrivate) });
+      rules.push({ ...rule, actions: withPrivacy(onShareAs(rule.actions, shareAs), settings.markPrivate) });
     }
   }
   rules.push({
-    actions: withPrivacy(shareAsActions(settings.shareAs, settings.busyTitle), settings.markPrivate),
+    actions: withPrivacy(shareAs, settings.markPrivate),
     conditions: [],
     id: SHARE_AS_RULE_ID,
     match: "all",

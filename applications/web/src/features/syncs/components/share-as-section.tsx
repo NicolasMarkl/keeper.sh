@@ -29,7 +29,7 @@ interface ShareAsSectionProps {
 export function ShareAsSection({ settings, sourceName, locked, previewClassName, onChange }: ShareAsSectionProps) {
   return (
     <>
-      <DashboardSection title="Share As" description="How copies look in the destination, unless a rule below says otherwise." />
+      <DashboardSection title="Share As" description="How copies look in the destination. Advanced rules start from this." />
       <NavigationMenu>
         {SHARE_AS_OPTIONS.map((option) => (
           <ShareAsOption

@@ -139,6 +139,23 @@ describe("compileSyncRules", () => {
     expect(evaluateRules(compiled, facts({ title: "1:1 with Priya" }))).toMatchObject({ summary: "Meeting" });
   });
 
+  it("starts each advanced rule from Share As, so a rename keeps hidden details hidden", () => {
+    const busyOnly = compileSyncRules(settings({ rules: [oneOnOnes], shareAs: "busy_only" }));
+    expect(evaluateRules(busyOnly, facts({ title: "1:1 with Priya" }))).toEqual({ skip: false, summary: "Meeting" });
+
+    const titleOnly = compileSyncRules(settings({ rules: [oneOnOnes], shareAs: "title_only" }));
+    expect(evaluateRules(titleOnly, facts({ title: "1:1 with Priya" }))).toEqual({ skip: false, summary: "Meeting" });
+  });
+
+  it("keeps Share As's busy title for a rule that only hides more", () => {
+    const hideLocation = { ...oneOnOnes, actions: [{ kind: "drop_location" as const }] };
+    const busyOnly = compileSyncRules(settings({ busyTitle: "Taken", rules: [hideLocation], shareAs: "busy_only" }));
+    expect(evaluateRules(busyOnly, facts({ title: "1:1 with Priya" }))).toEqual({ skip: false, summary: "Taken" });
+
+    const full = compileSyncRules(settings({ rules: [hideLocation], shareAs: "full" }));
+    expect(evaluateRules(full, facts({ title: "1:1 with Priya" }))).toEqual({ description: "Agenda", skip: false, summary: "1:1 with Priya" });
+  });
+
   it("leaves out advanced rules that are still missing a condition or an action", () => {
     const compiled = compileSyncRules(settings({ rules: [{ ...oneOnOnes, actions: [] }, { ...oneOnOnes, conditions: [] }] }));
     expect(compiled.map((rule) => rule.id)).toEqual(["share"]);

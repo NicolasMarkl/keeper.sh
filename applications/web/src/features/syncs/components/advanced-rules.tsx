@@ -86,7 +86,7 @@ export function AdvancedRules({ rules, shareAs, locked, otherSyncs, onChange }: 
       <AnimatedReveal show={open} skipInitial>
         <div className="flex flex-col gap-1.5 pt-1.5">
           <Text size="sm" tone="muted" className="px-0.5">
-            Checked after Never Copy; first match wins. Anything no rule matches is shared as {shareAsLabel(shareAs)}.
+            Checked after Never Copy; first match wins. Each rule starts from {shareAsLabel(shareAs)}, which is also how anything no rule matches is shared.
           </Text>
           <PremiumGate locked={locked} hint="Advanced rules are a Pro feature.">
             <div className="flex flex-col">
