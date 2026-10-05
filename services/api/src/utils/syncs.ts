@@ -39,7 +39,7 @@ import type {
   SyncRunRecord,
   SyncSummary,
 } from "@keeper.sh/data-schemas";
-import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, lt, or, sql } from "drizzle-orm";
 import type { database as databaseInstance } from "@/context";
 import {
   USER_MAPPING_LOCK_NAMESPACE,
@@ -703,21 +703,25 @@ const findSyncDetail = async (client: ReadClient, userId: string, syncId: string
   return detail ?? null;
 };
 
+// Postgres keeps microseconds and one save writes several rows sharing one, so the cursor keeps Postgres's own text.
+// A JS Date would round it to milliseconds, and the next page would skip the rest of that group.
 interface ActivityCursor {
-  createdAt: Date;
+  createdAt: string;
   id: string;
 }
 
-const encodeActivityCursor = (cursor: ActivityCursor): string => `${cursor.createdAt.toISOString()}_${cursor.id}`;
+const CURSOR_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
+
+const encodeActivityCursor = (cursor: ActivityCursor): string => `${cursor.createdAt}_${cursor.id}`;
 
 const decodeActivityCursor = (value: string | null): ActivityCursor | null => {
   if (!value) {
     return null;
   }
   const separator = value.indexOf("_");
-  const createdAt = new Date(value.slice(0, separator));
+  const createdAt = value.slice(0, separator);
   const id = value.slice(separator + 1);
-  if (separator === -1 || Number.isNaN(createdAt.getTime()) || !id) {
+  if (separator === -1 || !CURSOR_TIMESTAMP_PATTERN.test(createdAt) || !id) {
     return null;
   }
   return { createdAt, id };
@@ -800,9 +804,10 @@ const listSyncActivity = async (
   const cursor = decodeActivityCursor(options.before);
   const conditions = [eq(syncActivityTable.syncId, syncId)];
   if (cursor) {
+    const cursorAt = sql`${cursor.createdAt}::timestamptz`;
     const olderThanCursor = or(
-      lt(syncActivityTable.createdAt, cursor.createdAt),
-      and(eq(syncActivityTable.createdAt, cursor.createdAt), lt(syncActivityTable.id, cursor.id)),
+      lt(syncActivityTable.createdAt, cursorAt),
+      and(eq(syncActivityTable.createdAt, cursorAt), lt(syncActivityTable.id, cursor.id)),
     );
     if (olderThanCursor) {
       conditions.push(olderThanCursor);
@@ -810,7 +815,10 @@ const listSyncActivity = async (
   }
   const [rows, summary] = await Promise.all([
     client
-      .select()
+      .select({
+        ...getTableColumns(syncActivityTable),
+        cursorAt: sql<string>`to_char(${syncActivityTable.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
       .from(syncActivityTable)
       .where(and(...conditions))
       .orderBy(desc(syncActivityTable.createdAt), desc(syncActivityTable.id))
@@ -821,7 +829,7 @@ const listSyncActivity = async (
   const last = page.at(-1);
   let nextCursor: string | null = null;
   if (rows.length > limit && last) {
-    nextCursor = encodeActivityCursor(last);
+    nextCursor = encodeActivityCursor({ createdAt: last.cursorAt, id: last.id });
   }
   return { entries: page.map((row) => toActivityEntry(row)), nextCursor, summary };
 };
