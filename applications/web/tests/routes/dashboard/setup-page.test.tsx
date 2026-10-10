@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { SyncSummary } from "@keeper.sh/data-schemas";
+import type { LoginImportStatus } from "../../../src/features/setup/use-login-import";
+import type { CalendarSource } from "../../../src/types/api";
 import { createEmptyDraft, type SetupDraft } from "../../../src/features/setup/setup-draft";
-import { buildFirstConnectDraft } from "../../../src/features/syncs/sync-draft";
+import { buildFirstConnectDraft, createSyncDraft } from "../../../src/features/syncs/sync-draft";
 import { makeSource } from "../../features/setup/fixtures";
 import "../../../src/routes/(dashboard)/dashboard/setup";
 
@@ -9,7 +12,7 @@ interface CapturedRoute {
   component: (() => React.ReactElement) | null;
 }
 
-const { captured, swrData, draftState, omitMotionProps } = vi.hoisted(() => {
+const { captured, swrData, draftState, omitMotionProps, plan, importState } = vi.hoisted(() => {
   const omitMotionProps = <T extends Record<string, unknown>>(props: T) => {
     const domProps = { ...props };
     delete domProps.animate;
@@ -21,7 +24,9 @@ const { captured, swrData, draftState, omitMotionProps } = vi.hoisted(() => {
   return {
     captured: { component: null } as CapturedRoute,
     draftState: { draft: null as SetupDraft | null },
+    importState: { status: "idle" as LoginImportStatus },
     omitMotionProps,
+    plan: { atLimit: false },
     swrData: new Map<string, unknown>(),
   };
 });
@@ -56,6 +61,7 @@ vi.mock("swr", () => {
 vi.mock("motion/react", () => ({
   AnimatePresence: ({ children }: React.PropsWithChildren) => <>{children}</>,
   LazyMotion: ({ children }: React.PropsWithChildren) => <>{children}</>,
+  MotionConfig: ({ children }: React.PropsWithChildren) => <>{children}</>,
   useReducedMotion: () => false,
 }));
 
@@ -71,7 +77,7 @@ vi.mock("../../../src/lib/motion-features", () => ({
 
 vi.mock("../../../src/hooks/use-entitlements", () => ({
   USAGE_CACHE_KEY: "/api/entitlements",
-  canAddMore: () => true,
+  canAddMore: () => !plan.atLimit,
   useEntitlements: () => ({ data: { accounts: { current: 1, limit: 2 }, canUseEventFilters: false, syncs: { current: 0, limit: 1 } } }),
   useMutateEntitlements: () => ({ revalidateEntitlements: () => Promise.resolve(undefined) }),
 }));
@@ -85,7 +91,7 @@ vi.mock("../../../src/features/setup/use-setup-draft", () => ({
 }));
 
 vi.mock("../../../src/features/setup/use-login-import", () => ({
-  useLoginImport: () => null,
+  useLoginImport: () => ({ retry: () => null, status: importState.status }),
 }));
 
 vi.mock("../../../src/config/commercial", () => ({
@@ -98,10 +104,31 @@ const sources = [
   makeSource("family", "outlook-account", ["pull", "push"], { name: "Family", provider: "outlook" }),
 ];
 
-const renderPage = (draft: SetupDraft): string => {
+const existingSync: SyncSummary = {
+  ...createSyncDraft(null, { destinationCalendarIds: ["personal"], name: "Desk", sourceCalendarIds: ["work"] }),
+  copiedCount: 0,
+  createdAt: "2026-10-01T00:00:00.000Z",
+  id: "sync-1",
+  lastSyncedAt: null,
+  pairCount: 1,
+  skippedCount: 0,
+  state: "ok",
+  updatedAt: "2026-10-01T00:00:00.000Z",
+};
+
+interface RenderOptions {
+  syncs?: SyncSummary[];
+  calendars?: CalendarSource[];
+  atLimit?: boolean;
+  importStatus?: LoginImportStatus;
+}
+
+const renderPage = (draft: SetupDraft, { syncs = [], calendars = sources, atLimit = false, importStatus = "idle" }: RenderOptions = {}): string => {
   swrData.clear();
-  swrData.set("/api/sources", sources);
-  swrData.set("/api/syncs", []);
+  swrData.set("/api/sources", calendars);
+  swrData.set("/api/syncs", syncs);
+  plan.atLimit = atLimit;
+  importState.status = importStatus;
   draftState.draft = draft;
   const Page = captured.component;
   if (!Page) throw new Error("Setup route did not register a component");
@@ -124,7 +151,7 @@ describe("setup page", () => {
   });
 
   it("introduces the first-connect Block My Time draft and lets it start", () => {
-    const sync = buildFirstConnectDraft(sources);
+    const sync = buildFirstConnectDraft(sources, false);
     if (!sync) throw new Error("expected a first-connect draft");
     const markup = renderPage({ ...createEmptyDraft(), firstConnect: true, sync });
 
@@ -133,5 +160,26 @@ describe("setup page", () => {
     expect(markup).toContain("Work");
     expect(markup).toContain("Personal");
     expect(markup).not.toMatch(START_DISABLED);
+  });
+
+  it("offers the calendar just connected to the sync the user already has", () => {
+    const markup = renderPage({ ...createEmptyDraft(), connectedAccountId: "outlook-account" }, { syncs: [existingSync] });
+
+    expect(markup).toContain("Add to a Sync You Have");
+    expect(markup).toContain("Add Family to Desk");
+    expect(markup).toContain('href="/dashboard/syncs/sync-1"');
+  });
+
+  it("points a user at the sync limit to the sync they have, not only a disabled Start", () => {
+    const markup = renderPage(createEmptyDraft(), { atLimit: true, syncs: [existingSync] });
+
+    expect(markup).toContain("Open Desk");
+    expect(markup).toContain("Free plans include one sync");
+    expect(markup).toMatch(START_DISABLED);
+  });
+
+  it("says when the calendars from a social sign-in couldn't be brought in", () => {
+    expect(renderPage(createEmptyDraft(), { calendars: [], importStatus: "importing" })).toContain("Bringing in the calendars from your sign-in");
+    expect(renderPage(createEmptyDraft(), { calendars: [], importStatus: "failed" })).toContain("Try again");
   });
 });

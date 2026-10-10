@@ -1,4 +1,4 @@
-import { use, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { use, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import Pencil from "lucide-react/dist/esm/icons/pencil";
 import { cn } from "@/utils/cn";
 import { ItemDisabledContext, MenuVariantContext } from "./navigation-menu.contexts";
@@ -47,32 +47,30 @@ export function NavigationMenuEditableItem(props: NavigationMenuEditableItemProp
     onCancel?.();
   };
 
-  if (editing) {
-    return (
-      <EditableItemInput
-        value={resolveValue()}
-        label={label}
-        trailing={trailing}
-        className={className}
-        onCommit={async (trimmed) => {
-          await onCommit(trimmed);
-          stopEditing();
-        }}
-        onCancel={cancelEditing}
-      />
-    );
-  }
-
   return (
-    <EditableItemDisplay
-      label={label}
-      trailing={trailing}
-      disabled={disabled}
-      className={className}
-      onStartEditing={startEditing}
-    >
-      {children ?? <EditableItemDefaultValue value={resolveValue()} label={label} />}
-    </EditableItemDisplay>
+    <EditableRow editing={editing} trailing={trailing}>
+      {editing ? (
+        <EditableItemInput
+          value={resolveValue()}
+          label={label}
+          className={className}
+          onCommit={async (trimmed) => {
+            await onCommit(trimmed);
+            stopEditing();
+          }}
+          onCancel={cancelEditing}
+        />
+      ) : (
+        <EditableItemDisplay
+          label={label}
+          disabled={disabled}
+          className={className}
+          onStartEditing={startEditing}
+        >
+          {children ?? <EditableItemDefaultValue value={resolveValue()} label={label} />}
+        </EditableItemDisplay>
+      )}
+    </EditableRow>
   );
 }
 
@@ -114,33 +112,31 @@ export function NavigationMenuEditableTemplateItem(props: NavigationMenuEditable
     onCancel?.();
   };
 
-  if (editing) {
-    return (
-      <EditableTemplateItemInput
-        value={resolveValue()}
-        label={label}
-        trailing={trailing}
-        renderInput={renderInput}
-        className={className}
-        onCommit={async (trimmed) => {
-          await onCommit(trimmed);
-          stopEditing();
-        }}
-        onCancel={cancelEditing}
-      />
-    );
-  }
-
   return (
-    <EditableItemDisplay
-      label={label}
-      trailing={trailing}
-      disabled={disabled}
-      className={className}
-      onStartEditing={startEditing}
-    >
-      {children ?? <EditableItemDefaultValue value={valueContent ?? resolveValue()} label={label} />}
-    </EditableItemDisplay>
+    <EditableRow editing={editing} trailing={trailing}>
+      {editing ? (
+        <EditableTemplateItemInput
+          value={resolveValue()}
+          label={label}
+          renderInput={renderInput}
+          className={className}
+          onCommit={async (trimmed) => {
+            await onCommit(trimmed);
+            stopEditing();
+          }}
+          onCancel={cancelEditing}
+        />
+      ) : (
+        <EditableItemDisplay
+          label={label}
+          disabled={disabled}
+          className={className}
+          onStartEditing={startEditing}
+        >
+          {children ?? <EditableItemDefaultValue value={valueContent ?? resolveValue()} label={label} />}
+        </EditableItemDisplay>
+      )}
+    </EditableRow>
   );
 }
 
@@ -195,11 +191,19 @@ function useEditableCommit(
   return { inputProps };
 }
 
-function EditableRow({ trailing, className, children }: { trailing?: ReactNode; className?: string; children: ReactNode }) {
+const keepInputFocused = (event: ReactMouseEvent) => event.preventDefault();
+
+// The row and its trailing slot stay mounted across the editing toggle, so a focused remove button keeps its focus.
+// While editing, pressing the trailing control keeps focus in the input, so its click lands instead of a blur commit.
+function EditableRow({ editing, trailing, children }: { editing: boolean; trailing?: ReactNode; children: ReactNode }) {
   return (
-    <li className={cn(className, trailing && "flex items-center")}>
+    <li className={cn(editing && "relative z-10 rounded-[0.875rem] has-focus:ring-2 has-focus:ring-ring", trailing && "flex items-center")}>
       {children}
-      {trailing}
+      {trailing && (
+        <div className="contents" onMouseDown={editing ? keepInputFocused : undefined}>
+          {trailing}
+        </div>
+      )}
     </li>
   );
 }
@@ -207,14 +211,12 @@ function EditableRow({ trailing, className, children }: { trailing?: ReactNode; 
 function EditableItemInput({
   value,
   label,
-  trailing,
   className,
   onCommit,
   onCancel,
 }: {
   value: string;
   label?: string;
-  trailing?: ReactNode;
   className?: string;
   onCommit: (value: string) => Promise<void> | void;
   onCancel: () => void;
@@ -227,19 +229,16 @@ function EditableItemInput({
   );
 
   return (
-    <EditableRow trailing={trailing} className="relative z-10 rounded-[0.875rem] has-focus:ring-2 has-focus:ring-ring">
-      <div className={navigationMenuItemStyle({ variant, interactive: false, className: cn("min-w-0 flex-1", className) })}>
-        {label && <NavigationMenuItemLabel className="shrink-0">{label}</NavigationMenuItemLabel>}
-        <input {...inputProps} className={cn(inputClass, "text-foreground-muted")} />
-      </div>
-    </EditableRow>
+    <div className={navigationMenuItemStyle({ variant, interactive: false, className: cn("min-w-0 flex-1", className) })}>
+      {label && <NavigationMenuItemLabel className="shrink-0">{label}</NavigationMenuItemLabel>}
+      <input {...inputProps} className={cn(inputClass, "text-foreground-muted")} />
+    </div>
   );
 }
 
 function EditableTemplateItemInput({
   value,
   label,
-  trailing,
   className,
   renderInput,
   onCommit,
@@ -247,7 +246,6 @@ function EditableTemplateItemInput({
 }: {
   value: string;
   label?: string;
-  trailing?: ReactNode;
   className?: string;
   renderInput: (value: string) => ReactNode;
   onCommit: (value: string) => Promise<void> | void;
@@ -261,26 +259,24 @@ function EditableTemplateItemInput({
   );
 
   return (
-    <EditableRow trailing={trailing} className="relative z-10 rounded-[0.875rem] has-focus:ring-2 has-focus:ring-ring">
-      <div className={navigationMenuItemStyle({ variant, interactive: false, className: cn("min-w-0 flex-1", className) })}>
-        {label && <NavigationMenuItemLabel className="shrink-0">{label}</NavigationMenuItemLabel>}
-        <div className={cn(inputClass, "grid items-center")}>
-          <input
-            {...inputProps}
-            className={cn(
-              "col-start-1 row-start-1 w-full text-sm tracking-tight bg-transparent text-transparent caret-foreground-muted cursor-text outline-none",
-              label && "text-right",
-            )}
-          />
-          <TemplateInputOverlay
-            inputRef={inputProps.ref}
-            defaultValue={value}
-            renderInput={renderInput}
-            label={label}
-          />
-        </div>
+    <div className={navigationMenuItemStyle({ variant, interactive: false, className: cn("min-w-0 flex-1", className) })}>
+      {label && <NavigationMenuItemLabel className="shrink-0">{label}</NavigationMenuItemLabel>}
+      <div className={cn(inputClass, "grid items-center")}>
+        <input
+          {...inputProps}
+          className={cn(
+            "col-start-1 row-start-1 w-full text-sm tracking-tight bg-transparent text-transparent caret-foreground-muted cursor-text outline-none",
+            label && "text-right",
+          )}
+        />
+        <TemplateInputOverlay
+          inputRef={inputProps.ref}
+          defaultValue={value}
+          renderInput={renderInput}
+          label={label}
+        />
       </div>
-    </EditableRow>
+    </div>
   );
 }
 
@@ -346,14 +342,12 @@ function EditableItemDefaultValue({ value, label }: { value: ReactNode; label?: 
 function EditableItemDisplay({
   label,
   children,
-  trailing,
   disabled: disabledProp,
   className,
   onStartEditing,
 }: {
   label?: string;
   children?: ReactNode;
-  trailing?: ReactNode;
   disabled?: boolean;
   className?: string;
   onStartEditing: () => void;
@@ -363,26 +357,24 @@ function EditableItemDisplay({
   const disabled = disabledProp || disabledFromContext;
 
   return (
-    <EditableRow trailing={trailing}>
-      <ItemDisabledContext value={disabled}>
-        <button
-          type="button"
-          onClick={() => !disabled && onStartEditing()}
-          disabled={disabled}
-          className={navigationMenuItemStyle({ variant, interactive: !disabled, className: cn("min-w-0 flex-1", className) })}
-        >
-          {label && <NavigationMenuItemLabel className="shrink-0">{label}</NavigationMenuItemLabel>}
-          {children}
-          <Pencil
-            size={14}
-            className={navigationMenuItemIconStyle({
-              variant,
-              disabled,
-              className: label ? "shrink-0" : "ml-auto",
-            })}
-          />
-        </button>
-      </ItemDisabledContext>
-    </EditableRow>
+    <ItemDisabledContext value={disabled}>
+      <button
+        type="button"
+        onClick={() => !disabled && onStartEditing()}
+        disabled={disabled}
+        className={navigationMenuItemStyle({ variant, interactive: !disabled, className: cn("min-w-0 flex-1", className) })}
+      >
+        {label && <NavigationMenuItemLabel className="shrink-0">{label}</NavigationMenuItemLabel>}
+        {children}
+        <Pencil
+          size={14}
+          className={navigationMenuItemIconStyle({
+            variant,
+            disabled,
+            className: label ? "shrink-0" : "ml-auto",
+          })}
+        />
+      </button>
+    </ItemDisabledContext>
   );
 }

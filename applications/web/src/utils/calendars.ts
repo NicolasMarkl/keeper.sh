@@ -1,4 +1,4 @@
-interface CalendarLike {
+export interface CalendarLike {
   capabilities: string[];
 }
 

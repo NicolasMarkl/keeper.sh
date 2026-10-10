@@ -1,4 +1,4 @@
-import { AnimatePresence, LazyMotion } from "motion/react";
+import { AnimatePresence, LazyMotion, useReducedMotion } from "motion/react";
 import { loadMotionFeatures } from "@/lib/motion-features";
 import * as m from "motion/react-m";
 import type { ReactNode } from "react";
@@ -8,6 +8,7 @@ const HIDDEN = { height: 0, opacity: 0, filter: "blur(4px)", overflow: "clip" };
 const VISIBLE = { height: "fit-content", opacity: 1, filter: "blur(0px)", transitionEnd: { filter: "none", overflow: "visible" } };
 const LEAVING = { ...HIDDEN, filter: ["blur(0px)", "blur(4px)"] };
 const CLIP_STYLE = { overflowClipMargin: 4 };
+const INSTANT = { duration: 0 };
 
 interface AnimatedRevealProps {
   show: boolean;
@@ -35,8 +36,9 @@ export function RevealGroup({ children }: { children: ReactNode }) {
 }
 
 export function RevealItem({ children }: { children: ReactNode }) {
+  const reduceMotion = useReducedMotion() ?? false;
   return (
-    <m.div style={CLIP_STYLE} initial={HIDDEN} animate={VISIBLE} exit={LEAVING}>
+    <m.div style={CLIP_STYLE} initial={HIDDEN} animate={VISIBLE} exit={LEAVING} transition={reduceMotion ? INSTANT : undefined}>
       {children}
     </m.div>
   );

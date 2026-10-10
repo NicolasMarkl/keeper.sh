@@ -17,12 +17,13 @@ const STEP_LABELS: Record<SetupStepKey, string> = {
 
 interface SetupCardProps {
   sourceCount: number;
-  accountCount: number;
+  pairable: boolean;
   syncCount: number;
+  usesFeeds: boolean;
 }
 
-export function SetupCard({ sourceCount, accountCount, syncCount }: SetupCardProps) {
-  const { show, steps } = resolveSetupSteps({ accountCount, sourceCount, syncCount });
+export function SetupCard({ sourceCount, pairable, syncCount, usesFeeds }: SetupCardProps) {
+  const { show, steps } = resolveSetupSteps({ pairable, sourceCount, syncCount, usesFeeds });
   if (!show) return null;
 
   return (
@@ -33,7 +34,10 @@ export function SetupCard({ sourceCount, accountCount, syncCount }: SetupCardPro
       {steps.map((step) => (
         <NavigationMenuLinkItem key={step.key} to="/dashboard/setup">
           <CheckboxIndicator checked={step.done} variant="highlight" />
-          <NavigationMenuItemLabel>{STEP_LABELS[step.key]}</NavigationMenuItemLabel>
+          <NavigationMenuItemLabel>
+            {STEP_LABELS[step.key]}
+            <span className="sr-only">{step.done ? ", done" : ", not done yet"}</span>
+          </NavigationMenuItemLabel>
           <NavigationMenuItemTrailing />
         </NavigationMenuLinkItem>
       ))}

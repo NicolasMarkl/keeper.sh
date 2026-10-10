@@ -98,7 +98,7 @@ function MenuGate({
   return (
     <div className={cn(GATE_CLASS[tone], className)} style={STRIPE_STYLE[tone]}>
       {disableChildren ? (
-        <div className="pointer-events-none" aria-disabled="true">
+        <div className="pointer-events-none" aria-disabled="true" inert>
           {children}
         </div>
       ) : (

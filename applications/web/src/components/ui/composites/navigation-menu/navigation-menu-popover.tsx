@@ -1,4 +1,4 @@
-import { use, useCallback, useEffect, useLayoutEffect, useRef, useState, type PropsWithChildren, type ReactNode } from "react";
+import { use, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type PropsWithChildren, type ReactNode } from "react";
 import { AnimatePresence, LazyMotion, useReducedMotion } from "motion/react";
 import { loadMotionFeatures } from "@/lib/motion-features";
 import * as m from "motion/react-m";
@@ -6,6 +6,7 @@ import ChevronsUpDown from "lucide-react/dist/esm/icons/chevrons-up-down";
 import { cn } from "@/utils/cn";
 import { useSetPopoverOverlay } from "@/hooks/use-popover-overlay";
 import { resolveScrollParent } from "@/lib/scroll-parent";
+import { anchorMovesWithScroll, resolvePanelPlacement, type PanelAlign } from "@/lib/panel-placement";
 import {
   InsidePopoverContext,
   ItemDisabledContext,
@@ -32,6 +33,7 @@ const CONTENT_INITIAL = { height: 0, filter: "blur(0)", opacity: 0 };
 const CONTENT_ANIMATE = { height: "fit-content" as const, filter: "blur(0)", opacity: 1 };
 const CONTENT_EXIT = { height: 0, filter: "blur(4px)", opacity: 0 };
 const POPOVER_CONTENT_STYLE = { maxHeight: "16rem" } as const;
+const INSTANT = { duration: 0 } as const;
 // The default panel sits 0.75 (3px) past the trigger on each side.
 const PANEL_BLEED_PX = 6;
 const REVEAL_MARGIN_PX = 8;
@@ -44,33 +46,23 @@ interface PanelParts {
   list: HTMLElement;
 }
 
-type PanelAlign = "start" | "center" | "end";
-
 const PANEL_ALIGN_CLASS: Record<PanelAlign, string> = { center: "items-center", end: "items-end", start: "items-start" };
 
-// The panel grows out from the trigger's centre, so its settled box is known before the animation starts.
-// Near an edge the scroller can't move far enough, so it grows away from that edge instead of being clipped.
+// The panel's settled box is known before the animation starts, so it can be placed up front.
 function revealPanel({ anchor, panel, trigger, content, list }: PanelParts, smooth: boolean): PanelAlign {
-  const height = panel.offsetHeight - trigger.offsetHeight - content.offsetHeight + list.offsetHeight;
   const anchorBox = anchor.getBoundingClientRect();
-
   const scroller = resolveScrollParent(anchor);
   const visibleTop = (scroller ? scroller.getBoundingClientRect().top : 0) + REVEAL_MARGIN_PX;
-  const visibleBottom = visibleTop + (scroller ? scroller.clientHeight : window.innerHeight) - REVEAL_MARGIN_PX * 2;
-  const scrolled = scroller ? scroller.scrollTop : window.scrollY;
-  const scrollable = scroller ? scroller.scrollHeight - scroller.clientHeight : document.documentElement.scrollHeight - window.innerHeight;
-
-  const scrollNeeded = (top: number): number => {
-    const overTop = top - visibleTop;
-    const overBottom = top + height - visibleBottom;
-    return overTop < 0 ? overTop : Math.max(0, Math.min(overBottom, overTop));
-  };
-
-  const centred = scrollNeeded(anchorBox.top + anchorBox.height / 2 - height / 2);
-  const reachable = centred >= -scrolled && centred <= scrollable - scrolled;
-  const align: PanelAlign = reachable ? "center" : centred < 0 ? "start" : "end";
-  const needed = align === "center" ? centred : scrollNeeded(align === "start" ? anchorBox.top : anchorBox.bottom - height);
-  const delta = Math.min(Math.max(needed, -scrolled), scrollable - scrolled);
+  const { align, delta } = resolvePanelPlacement({
+    anchorBottom: anchorBox.bottom,
+    anchorScrolls: anchorMovesWithScroll(anchor, scroller),
+    anchorTop: anchorBox.top,
+    height: panel.offsetHeight - trigger.offsetHeight - content.offsetHeight + list.offsetHeight,
+    scrollable: scroller ? scroller.scrollHeight - scroller.clientHeight : document.documentElement.scrollHeight - window.innerHeight,
+    scrolled: scroller ? scroller.scrollTop : window.scrollY,
+    visibleBottom: visibleTop + (scroller ? scroller.clientHeight : window.innerHeight) - REVEAL_MARGIN_PX * 2,
+    visibleTop,
+  });
 
   if (delta !== 0) (scroller ?? window).scrollBy({ top: delta, behavior: smooth ? "smooth" : "auto" });
   return align;
@@ -105,11 +97,15 @@ export function NavigationMenuPopover({
   const [present, setPresent] = useState(false);
   const [triggerWidth, setTriggerWidth] = useState(0);
   const containerRef = useRef<HTMLLIElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
   const afterCloseRef = useRef<(() => void) | null>(null);
   const setOverlay = useSetPopoverOverlay();
   const variant = use(MenuVariantContext);
 
+  // The focused option unmounts with the panel, so focus goes back to the trigger rather than the page.
   const close = useCallback(() => {
+    if (containerRef.current?.contains(document.activeElement)) triggerRef.current?.focus({ preventScroll: true });
     setExpanded(false);
     setOverlay(false);
   }, [setOverlay]);
@@ -180,7 +176,10 @@ export function NavigationMenuPopover({
       >
         <ItemDisabledContext value={Boolean(disabled)}>
           <button
+            ref={triggerRef}
             type="button"
+            aria-expanded={expanded}
+            aria-controls={expanded ? panelId : undefined}
             onClick={disabled ? undefined : toggle}
             disabled={disabled}
             className={navigationMenuItemStyle({
@@ -210,7 +209,7 @@ export function NavigationMenuPopover({
             }}
           >
             {expanded && (
-              <NavigationMenuPopoverPanel size={size} className={panelClassName} startWidth={panelClassName ? triggerWidth + PANEL_BLEED_PX : undefined}>
+              <NavigationMenuPopoverPanel id={panelId} size={size} className={panelClassName} startWidth={panelClassName ? triggerWidth + PANEL_BLEED_PX : undefined}>
                 {children}
               </NavigationMenuPopoverPanel>
             )}
@@ -222,12 +221,13 @@ export function NavigationMenuPopover({
 }
 
 interface PopoverPanelProps {
+  id: string;
   size: MenuItemSize;
   className?: string;
   startWidth?: number;
 }
 
-function NavigationMenuPopoverPanel({ children, size, className, startWidth }: PropsWithChildren<PopoverPanelProps>) {
+function NavigationMenuPopoverPanel({ children, id, size, className, startWidth }: PropsWithChildren<PopoverPanelProps>) {
   const { expanded, triggerContent } = usePopover();
   const variant = use(MenuVariantContext);
   const reduceMotion = useReducedMotion() ?? false;
@@ -237,6 +237,7 @@ function NavigationMenuPopoverPanel({ children, size, className, startWidth }: P
   const contentRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [align, setAlign] = useState<PanelAlign>("center");
+  const transition = reduceMotion ? INSTANT : undefined;
 
   useLayoutEffect(() => {
     if (!expanded) return;
@@ -248,6 +249,7 @@ function NavigationMenuPopoverPanel({ children, size, className, startWidth }: P
   return (
     <m.div
       ref={anchorRef}
+      id={id}
       className={cn("absolute grid pointer-events-none z-20", className ?? "-inset-0.75 justify-items-center", PANEL_ALIGN_CLASS[align])}
       initial={POPOVER_INITIAL}
     >
@@ -260,6 +262,7 @@ function NavigationMenuPopoverPanel({ children, size, className, startWidth }: P
         initial={startWidth === undefined ? SHADOW_HIDDEN : { ...SHADOW_HIDDEN, width: startWidth }}
         animate={startWidth === undefined ? SHADOW_VISIBLE : { ...SHADOW_VISIBLE, width: "100%" }}
         exit={startWidth === undefined ? SHADOW_HIDDEN : { ...SHADOW_HIDDEN, width: startWidth }}
+        transition={transition}
       >
         <m.div
           ref={triggerRef}
@@ -267,6 +270,7 @@ function NavigationMenuPopoverPanel({ children, size, className, startWidth }: P
           initial={TRIGGER_INITIAL}
           animate={TRIGGER_ANIMATE}
           exit={TRIGGER_EXIT}
+          transition={transition}
         >
           <div className={navigationMenuItemStyle({ variant, interactive: false, size })}>
             {triggerContent}
@@ -282,6 +286,7 @@ function NavigationMenuPopoverPanel({ children, size, className, startWidth }: P
           initial={CONTENT_INITIAL}
           animate={CONTENT_ANIMATE}
           exit={CONTENT_EXIT}
+          transition={transition}
         >
           <InsidePopoverContext value>
             <div ref={listRef} className="overflow-y-auto" style={POPOVER_CONTENT_STYLE}>

@@ -51,11 +51,12 @@ import { DashboardReauthNotice } from "@/features/dashboard/components/reauth/re
 import CreditCard from "lucide-react/dist/esm/icons/credit-card";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import { useSubscription, fetchSubscriptionStateWithApi } from "@/hooks/use-subscription";
-import { useEntitlements } from "@/hooks/use-entitlements";
+import { useIcalFeeds } from "@/hooks/use-ical-feeds";
 import { openCustomerPortal } from "@/utils/checkout";
 import { SetupCard } from "@/features/setup/components/setup-card";
 import { SyncsMenu } from "@/features/syncs/components/syncs-menu";
-import { resolveSetupSteps } from "@/features/setup/setup-card-steps";
+import { canFormSync, resolveSetupSteps } from "@/features/setup/setup-card-steps";
+import { useSyncs } from "@/features/syncs/use-syncs";
 
 async function loadSubscription(context: {
   fetchApi: <T>(path: string, init?: RequestInit) => Promise<T>;
@@ -89,7 +90,7 @@ function DashboardPage() {
 
   return (
     <div className="flex flex-col lg:h-full">
-      <StickyPageHeader>
+      <StickyPageHeader stickyFrom="lg">
         <SyncStatus />
         <EventGraph />
       </StickyPageHeader>
@@ -140,25 +141,28 @@ interface RefreshStatus {
   tone: "muted" | "danger";
 }
 
+// Counts come from the lists themselves: entitlements can be an optimistic stand-in whose counts are all zero.
 function DashboardSetupCard() {
   const { data: sources, shouldAnimate } = useAnimatedSWR<CalendarSource[]>("/api/sources");
-  const { data: entitlements } = useEntitlements();
-  const ready = Boolean(sources && entitlements);
+  const { data: syncs } = useSyncs();
+  const { data: feeds, error: feedsError } = useIcalFeeds();
+  const ready = Boolean(sources && syncs && (feeds || feedsError));
   const sourceCount = sources?.length ?? 0;
-  const accountCount = new Set(sources?.map((source) => source.accountId)).size;
-  const syncCount = entitlements?.syncs.current ?? 0;
-  const { show } = resolveSetupSteps({ accountCount, sourceCount, syncCount });
+  const syncCount = syncs?.length ?? 0;
+  const pairable = canFormSync(sources ?? []);
+  const usesFeeds = (feeds ?? []).some((feed) => (feed.calendarCount ?? 0) > 0);
+  const { show } = resolveSetupSteps({ pairable, sourceCount, syncCount, usesFeeds });
 
   return (
     <AnimatedReveal show={ready && show} skipInitial={!shouldAnimate}>
-      <SetupCard sourceCount={sourceCount} accountCount={accountCount} syncCount={syncCount} />
+      <SetupCard sourceCount={sourceCount} pairable={pairable} syncCount={syncCount} usesFeeds={usesFeeds} />
     </AnimatedReveal>
   );
 }
 
 function DashboardSyncsMenu() {
-  const { data: entitlements } = useEntitlements();
-  if (!entitlements || entitlements.syncs.current === 0) return null;
+  const { data: syncs } = useSyncs();
+  if (!syncs || syncs.length === 0) return null;
   return <SyncsMenu />;
 }
 

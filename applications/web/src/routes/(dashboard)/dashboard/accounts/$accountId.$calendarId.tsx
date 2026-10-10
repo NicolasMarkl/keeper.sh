@@ -251,6 +251,7 @@ function SyncRangeOptionItem({
 
   return (
     <NavigationMenuButtonItem
+      selected={selected}
       onClick={() => {
         onSelect(option.value);
         close();
