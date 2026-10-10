@@ -44,10 +44,10 @@ describe("sourcePatchBodySchema", () => {
     expect(result instanceof type.errors).toBe(false);
   });
 
-  it("accepts boolean exclude fields", () => {
+  it("accepts the calendar's own boolean settings and a pause", () => {
     const result = sourcePatchBodySchema({
-      excludeAllDayEvents: true,
-      excludeEventDescription: false,
+      includeInIcalFeed: true,
+      paused: false,
       treatFullDayTimedEventsAsAllDay: true,
     });
     expect(result instanceof type.errors).toBe(false);
@@ -66,11 +66,18 @@ describe("sourcePatchBodySchema", () => {
     expect(result instanceof type.errors).toBe(true);
   });
 
-  it("accepts markEventsAsPrivate as boolean", () => {
-    const result = sourcePatchBodySchema({ markEventsAsPrivate: true });
-    expect(result instanceof type.errors).toBe(false);
+  it("rejects the per-calendar copy settings that syncs replaced", () => {
+    const legacy = [
+      { customEventName: "Busy" },
+      { excludeAllDayEvents: true },
+      { excludeEventName: true },
+      { excludeFocusTime: true },
+      { markEventsAsPrivate: true },
+    ];
+    for (const body of legacy) {
+      expect(sourcePatchBodySchema(body) instanceof type.errors).toBe(true);
+    }
   });
-
 
   it("rejects extra properties", () => {
     const result = sourcePatchBodySchema({ name: "ok", hacker: true });

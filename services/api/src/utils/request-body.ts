@@ -9,18 +9,11 @@ type CalendarIdsBody = typeof calendarIdsBodySchema.infer;
 
 const sourcePatchBodySchema = type({
   "name?": "string",
-  "customEventName?": "string",
-  "excludeAllDayEvents?": "boolean",
-  "excludeEventDescription?": "boolean",
-  "excludeEventLocation?": "boolean",
-  "excludeEventName?": "boolean",
-  "excludeFocusTime?": "boolean",
-  "excludeOutOfOffice?": "boolean",
   "includeInIcalFeed?": "boolean",
+  "paused?": "boolean",
   "treatFullDayTimedEventsAsAllDay?": "boolean",
   "syncHistoricRange?": syncRangeSchema,
   "syncFutureRange?": syncRangeSchema,
-  "markEventsAsPrivate?": "boolean",
   "+": "reject",
 });
 type SourcePatchBody = typeof sourcePatchBodySchema.infer;

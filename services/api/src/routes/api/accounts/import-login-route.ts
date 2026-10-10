@@ -1,3 +1,5 @@
+import { isProviderAuthFailure, isProviderTokenRefreshFailure } from "@keeper.sh/calendar";
+import { ErrorResponse } from "@/utils/responses";
 import { widelog } from "@/utils/logging";
 import { OAuthSourceLimitError } from "@/utils/oauth-sources";
 
@@ -10,6 +12,7 @@ const MICROSOFT_GRAPH_RESOURCE_PREFIX = "https://graph.microsoft.com/";
 const LOGIN_PROVIDERS: Record<string, string> = { google: "google", microsoft: "outlook" };
 const LOGIN_PROVIDER_IDS = Object.keys(LOGIN_PROVIDERS);
 const EXPIRY_SKEW_MS = 60_000;
+const SIGNUP_WINDOW_MS = 3_600_000;
 
 interface LoginAccount {
   providerId: string;
@@ -23,13 +26,25 @@ interface LoginAccount {
 interface AccessToken {
   accessToken: string;
   expiresAt: Date;
+  refreshToken?: string;
 }
+
+interface ImportEligibility {
+  calendarAccountCount: number;
+  userCreatedAt: Date | null;
+}
+
+type ImportClaim =
+  | { allowed: true }
+  | { allowed: false; retryAfterSeconds: number };
 
 interface ImportLoginRouteContext {
   userId: string;
 }
 
 interface ImportLoginRouteDependencies {
+  claimImport: (userId: string) => Promise<ImportClaim>;
+  loadEligibility: (userId: string) => Promise<ImportEligibility>;
   loadLoginAccounts: (userId: string) => Promise<LoginAccount[]>;
   refreshToken: (provider: string, refreshToken: string) => Promise<AccessToken>;
   fetchUserInfo: (provider: string, accessToken: string) => Promise<{ id: string; email: string }>;
@@ -102,7 +117,7 @@ const importLoginAccount = async (
     email: userInfo.email,
     expiresAt: token.expiresAt,
     provider,
-    refreshToken: account.refreshToken,
+    refreshToken: token.refreshToken ?? account.refreshToken,
   });
 
   return dependencies.importCalendars({
@@ -115,10 +130,32 @@ const importLoginAccount = async (
   });
 };
 
+// Only a fresh signup turns its login grant into an account, so removing that account later sticks.
+const isFreshSignup = (eligibility: ImportEligibility, now: number): boolean =>
+  eligibility.calendarAccountCount === 0
+  && eligibility.userCreatedAt !== null
+  && now - eligibility.userCreatedAt.getTime() <= SIGNUP_WINDOW_MS;
+
 const handleImportLoginRoute = async (
   context: ImportLoginRouteContext,
   dependencies: ImportLoginRouteDependencies,
 ): Promise<Response> => {
+  const eligibility = await dependencies.loadEligibility(context.userId);
+  if (!isFreshSignup(eligibility, dependencies.now())) {
+    widelog.set("login_import.eligible", false);
+    return Response.json({ imported: false });
+  }
+
+  const claim = await dependencies.claimImport(context.userId);
+  if (!claim.allowed) {
+    widelog.set("login_import.throttled", true);
+    const throttled = ErrorResponse.tooManyRequests(
+      `Your calendars are already being imported. Try again in ${claim.retryAfterSeconds} seconds.`,
+    ).toResponse();
+    throttled.headers.set("Retry-After", String(claim.retryAfterSeconds));
+    return throttled;
+  }
+
   const accounts = await dependencies.loadLoginAccounts(context.userId);
   const accountIds: string[] = [];
 
@@ -133,14 +170,15 @@ const handleImportLoginRoute = async (
         widelog.set("login_import.limit_reached", true);
         break;
       }
+      const requiresReauth = isProviderAuthFailure(error) || isProviderTokenRefreshFailure(error);
       widelog.set("login_import.failed_provider", account.providerId);
-      widelog.errorFields(error, { slug: "login-import-failed", retriable: true });
+      widelog.errorFields(error, { requiresReauth, retriable: !requiresReauth, slug: "login-import-failed" });
     }
   }
 
   widelog.set("login_import.accounts", accountIds.length);
-  return Response.json({ accountIds });
+  return Response.json({ accountIds, imported: accountIds.length > 0 });
 };
 
 export { handleImportLoginRoute, hasLoginCalendarScopes, LOGIN_PROVIDER_IDS };
-export type { ImportLoginRouteDependencies, LoginAccount };
+export type { ImportClaim, ImportEligibility, ImportLoginRouteDependencies, LoginAccount };

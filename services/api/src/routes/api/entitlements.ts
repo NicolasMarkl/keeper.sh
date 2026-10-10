@@ -13,6 +13,7 @@ interface EntitlementsDependencies {
   getAccountLimit: (plan: Plan) => number;
   getFeedCount: (userId: string) => Promise<number>;
   getFeedLimit: (plan: Plan) => number;
+  getSyncCalendarLimit: (plan: Plan) => number;
   getSyncCount: (userId: string) => Promise<number>;
   getSyncLimit: (plan: Plan) => number;
   getUserPlan: (userId: string) => Promise<Plan>;
@@ -50,6 +51,9 @@ const handleEntitlementsRoute = async (
     },
     plan,
     realtimeSync: plan === "pro" && dependencies.webhookConfigured,
+    syncCalendars: {
+      limit: toReportedLimit(dependencies.getSyncCalendarLimit(plan)),
+    },
     syncs: {
       current: syncCount,
       limit: toReportedLimit(dependencies.getSyncLimit(plan)),
@@ -75,6 +79,7 @@ const GET = withWideEvent(
       return feeds.length;
     },
     getFeedLimit: (plan) => premiumService.getFeedLimit(plan),
+    getSyncCalendarLimit: (plan) => premiumService.getSyncCalendarLimit(plan),
     getSyncCount: async (resolvedUserId) => {
       const syncs = await database
         .select({ id: syncsTable.id })

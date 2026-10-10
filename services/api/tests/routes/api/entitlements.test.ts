@@ -11,6 +11,7 @@ const makeDependencies = (
   getAccountLimit: () => Number.POSITIVE_INFINITY,
   getFeedCount: () => Promise.resolve(1),
   getFeedLimit: () => Number.POSITIVE_INFINITY,
+  getSyncCalendarLimit: () => Number.POSITIVE_INFINITY,
   getSyncCount: () => Promise.resolve(3),
   getSyncLimit: () => Number.POSITIVE_INFINITY,
   getUserPlan: () => Promise.resolve("pro" as const),
@@ -70,6 +71,7 @@ describe("handleEntitlementsRoute realtimeSync", () => {
       feeds: { current: 1, limit: null },
       plan: "pro",
       realtimeSync: true,
+      syncCalendars: { limit: null },
       syncs: { current: 3, limit: null },
     });
   });
@@ -110,5 +112,16 @@ describe("handleEntitlementsRoute syncs", () => {
     );
 
     expect(await readJson(response)).toMatchObject({ syncs: { current: 3, limit: 1 } });
+  });
+});
+
+describe("handleEntitlementsRoute syncCalendars", () => {
+  it("reports how many calendars each side of a free sync can hold", async () => {
+    const response = await handleEntitlementsRoute(
+      { userId: "user-1" },
+      makeDependencies({ getSyncCalendarLimit: () => 3, getUserPlan: () => Promise.resolve("free" as const) }),
+    );
+
+    expect(await readJson(response)).toMatchObject({ syncCalendars: { limit: 3 } });
   });
 });

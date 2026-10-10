@@ -1,29 +1,16 @@
-import {
-  calendarsTable,
-  sourceDestinationMappingsTable,
-  userSyncRequestsTable,
-} from "@keeper.sh/database/schema";
-import { and, eq, inArray } from "drizzle-orm";
+import { userSyncRequestsTable } from "@keeper.sh/database/schema";
+import { and, eq } from "drizzle-orm";
 import { createMappingMutationLockId, createSyncLock } from "@keeper.sh/sync";
 import type { SyncLockHandle } from "@keeper.sh/sync";
 import type { database as databaseInstance } from "@/context";
 import { enqueuePushSync } from "./enqueue-push-sync";
 import { spawnBackgroundJob } from "./background-task";
 
-const EMPTY_LIST_COUNT = 0;
 const USER_MAPPING_LOCK_NAMESPACE = 9001;
 
 type DatabaseClient = typeof databaseInstance;
 type DatabaseTransactionCallback = Parameters<DatabaseClient["transaction"]>[0];
 type DatabaseTransactionClient = Parameters<DatabaseTransactionCallback>[0];
-
-interface SourceDestinationMapping {
-  id: string;
-  sourceCalendarId: string;
-  destinationCalendarId: string;
-  createdAt: Date;
-  calendarType: string;
-}
 
 const requestUserSync = async (
   transactionClient: DatabaseTransactionClient,
@@ -38,81 +25,6 @@ const requestUserSync = async (
       target: userSyncRequestsTable.userId,
       set: { requestId, requestedAt },
     });
-};
-
-const getUserMappings = async (userId: string): Promise<SourceDestinationMapping[]> => {
-  const { database } = await import("@/context");
-
-  const userSourceCalendars = await database
-    .select({
-      calendarType: calendarsTable.calendarType,
-      id: calendarsTable.id,
-    })
-    .from(calendarsTable)
-    .where(
-      and(
-        eq(calendarsTable.userId, userId),
-        inArray(
-          calendarsTable.id,
-          database
-            .selectDistinct({ id: sourceDestinationMappingsTable.sourceCalendarId })
-            .from(sourceDestinationMappingsTable),
-        ),
-      ),
-    );
-
-  if (userSourceCalendars.length === EMPTY_LIST_COUNT) {
-    return [];
-  }
-
-  const calendarIds = userSourceCalendars.map((calendar) => calendar.id);
-  const typeByCalendarId = new Map(
-    userSourceCalendars.map((calendar) => [calendar.id, calendar.calendarType]),
-  );
-
-  const mappings = await database
-    .select()
-    .from(sourceDestinationMappingsTable)
-    .where(inArray(sourceDestinationMappingsTable.sourceCalendarId, calendarIds));
-
-  return mappings.map((mapping) => ({
-    ...mapping,
-    calendarType: typeByCalendarId.get(mapping.sourceCalendarId) ?? "unknown",
-  }));
-};
-
-const getDestinationsForSource = async (userId: string, sourceCalendarId: string): Promise<string[]> => {
-  const { database } = await import("@/context");
-
-  const mappings = await database
-    .select({ destinationCalendarId: sourceDestinationMappingsTable.destinationCalendarId })
-    .from(sourceDestinationMappingsTable)
-    .innerJoin(calendarsTable, eq(sourceDestinationMappingsTable.sourceCalendarId, calendarsTable.id))
-    .where(
-      and(
-        eq(sourceDestinationMappingsTable.sourceCalendarId, sourceCalendarId),
-        eq(calendarsTable.userId, userId),
-      ),
-    );
-
-  return mappings.map((mapping) => mapping.destinationCalendarId);
-};
-
-const getSourcesForDestination = async (userId: string, destinationCalendarId: string): Promise<string[]> => {
-  const { database } = await import("@/context");
-
-  const mappings = await database
-    .select({ sourceCalendarId: sourceDestinationMappingsTable.sourceCalendarId })
-    .from(sourceDestinationMappingsTable)
-    .innerJoin(calendarsTable, eq(sourceDestinationMappingsTable.destinationCalendarId, calendarsTable.id))
-    .where(
-      and(
-        eq(sourceDestinationMappingsTable.destinationCalendarId, destinationCalendarId),
-        eq(calendarsTable.userId, userId),
-      ),
-    );
-
-  return mappings.map((mapping) => mapping.sourceCalendarId);
 };
 
 const releaseSyncHandles = async (handles: SyncLockHandle[]): Promise<void> => {
@@ -262,9 +174,6 @@ const scheduleMappingReplacementSync = (userId: string): void => {
 
 export {
   USER_MAPPING_LOCK_NAMESPACE,
-  getUserMappings,
-  getDestinationsForSource,
-  getSourcesForDestination,
   runWithMappingMutationLocks,
   withMappingMutationLocks,
   enqueueMappingReplacementSync,

@@ -5,12 +5,11 @@ import { ErrorResponse } from "@/utils/responses";
 import { database, premiumService } from "@/context";
 import { idParamSchema } from "@/utils/request-query";
 import {
-  getDestinationsForSource,
-  getSourcesForDestination,
   requestUserSync,
   scheduleMappingReplacementSync,
   withMappingMutationLocks,
 } from "@/utils/source-destination-mappings";
+import { setCalendarPaused } from "@/utils/calendar-pause";
 import { withProviderMetadata } from "@/utils/provider-display";
 import { syncDefaultFeedMembership } from "@/utils/ical-feeds";
 import type { FeedMembershipClient } from "@/utils/ical-feeds";
@@ -34,13 +33,6 @@ const GET = withWideEvent(
         provider: calendarAccountsTable.provider,
         url: calendarsTable.url,
         calendarUrl: calendarsTable.calendarUrl,
-        customEventName: calendarsTable.customEventName,
-        excludeAllDayEvents: calendarsTable.excludeAllDayEvents,
-        excludeEventDescription: calendarsTable.excludeEventDescription,
-        excludeEventLocation: calendarsTable.excludeEventLocation,
-        excludeEventName: calendarsTable.excludeEventName,
-        excludeFocusTime: calendarsTable.excludeFocusTime,
-        excludeOutOfOffice: calendarsTable.excludeOutOfOffice,
         syncFutureRange: calendarsTable.syncFutureRange,
         syncHistoricRange: calendarsTable.syncHistoricRange,
         treatFullDayTimedEventsAsAllDay: calendarsTable.treatFullDayTimedEventsAsAllDay,
@@ -48,7 +40,6 @@ const GET = withWideEvent(
         disabled: calendarsTable.disabled,
         ingestFailureCount: calendarsTable.ingestFailureCount,
         ingestLastFailureAt: calendarsTable.ingestLastFailureAt,
-        markEventsAsPrivate: calendarsTable.markEventsAsPrivate,
         providerMissingSince: calendarsTable.providerMissingSince,
         createdAt: calendarsTable.createdAt,
         updatedAt: calendarsTable.updatedAt,
@@ -67,16 +58,7 @@ const GET = withWideEvent(
       return ErrorResponse.notFound().toResponse();
     }
 
-    const [destinationIds, sourceIds] = await Promise.all([
-      getDestinationsForSource(userId, id),
-      getSourcesForDestination(userId, id),
-    ]);
-
-    return Response.json({
-      ...withProviderMetadata(source),
-      destinationIds,
-      sourceIds,
-    });
+    return Response.json(withProviderMetadata(source));
   }),
 );
 
@@ -87,6 +69,7 @@ const PATCH = withWideEvent(
       { body: payload, params, userId },
       {
         canUseEventFilters: (candidateUserId) => premiumService.canUseEventFilters(candidateUserId),
+        setPaused: (userIdToPause, calendarId, paused) => setCalendarPaused(database, userIdToPause, calendarId, paused),
         updateSource: async (userIdToUpdate, sourceCalendarId, updates) => {
           const applyFeedMembership = async (
             client: FeedMembershipClient,
@@ -153,9 +136,6 @@ const PATCH = withWideEvent(
                 ),
               )
               .returning();
-            if (updated && "markEventsAsPrivate" in updates) {
-              await requestUserSync(transaction, userIdToUpdate);
-            }
             await applyFeedMembership(transaction, updated ?? null);
             return updated ?? null;
           });

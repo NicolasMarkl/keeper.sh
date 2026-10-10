@@ -3,25 +3,12 @@ import { sourcePatchBodySchema } from "@/utils/request-body";
 import { idParamSchema } from "@/utils/request-query";
 import { ErrorResponse } from "@/utils/responses";
 
-const EVENT_FILTER_FIELDS = [
-  "excludeAllDayEvents",
-  "excludeEventDescription",
-  "excludeEventLocation",
-  "excludeEventName",
-  "excludeFocusTime",
-  "excludeOutOfOffice",
-  "markEventsAsPrivate",
-] as const;
-
 const SOURCE_BOOLEAN_UPDATE_FIELDS = [
-  ...EVENT_FILTER_FIELDS,
   "includeInIcalFeed",
   "treatFullDayTimedEventsAsAllDay",
 ] as const;
 
 const PRO_GATED_SOURCE_FIELDS = [
-  ...EVENT_FILTER_FIELDS,
-  "customEventName",
   "treatFullDayTimedEventsAsAllDay",
   "syncHistoricRange",
   "syncFutureRange",
@@ -38,12 +25,18 @@ interface PatchSourceRouteContext extends SourceRouteContext {
 
 type SourceUpdateValue = string | boolean | number | null;
 
+interface CalendarPauseResult {
+  calendarId: string;
+  paused: boolean;
+}
+
 interface PatchSourceDependencies {
   updateSource: (
     userId: string,
     sourceCalendarId: string,
     updates: Record<string, SourceUpdateValue>,
   ) => Promise<Record<string, unknown> | null>;
+  setPaused: (userId: string, sourceCalendarId: string, paused: boolean) => Promise<CalendarPauseResult | null>;
   canUseEventFilters: (userId: string) => Promise<boolean>;
 }
 
@@ -54,9 +47,6 @@ const buildSourceUpdates = (
 
   if (body.name) {
     updates.name = body.name;
-  }
-  if (typeof body.customEventName === "string") {
-    updates.customEventName = body.customEventName;
   }
   if (typeof body.syncHistoricRange === "string") {
     updates.syncHistoricRange = body.syncHistoricRange;
@@ -109,9 +99,20 @@ const handlePatchSourceRoute = async (
   }
 
   const updates = buildSourceUpdates(parsedBody);
+  const { paused } = parsedBody;
 
-  if (Object.keys(updates).length === 0) {
+  if (Object.keys(updates).length === 0 && typeof paused !== "boolean") {
     return ErrorResponse.badRequest("No valid fields to update").toResponse();
+  }
+
+  if (typeof paused === "boolean") {
+    const pauseResult = await dependencies.setPaused(context.userId, resolvedId.id, paused);
+    if (!pauseResult) {
+      return ErrorResponse.notFound().toResponse();
+    }
+    if (Object.keys(updates).length === 0) {
+      return Response.json(pauseResult);
+    }
   }
 
   const updated = await dependencies.updateSource(context.userId, resolvedId.id, updates);

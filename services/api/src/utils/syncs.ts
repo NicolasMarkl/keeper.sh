@@ -2,6 +2,7 @@ import {
   calendarAccountsTable,
   calendarsTable,
   sourceDestinationMappingsTable,
+  syncActivityDaysTable,
   syncActivityTable,
   syncCalendarsTable,
   syncStatusTable,
@@ -9,34 +10,38 @@ import {
 } from "@keeper.sh/database/schema";
 import {
   DEFAULT_SYNC_SETTINGS,
+  addsProSettings,
   deriveSyncPairs,
   diffSyncChanges,
+  normalizeAdvancedRules,
   normalizeSkipKeywords,
   normalizeSyncCalendars,
   resolveSyncState,
+  sameCalendars,
   syncCalendarIds,
   toShareAs,
   toSyncMode,
+  validateSyncCalendarLimit,
   validateSyncCalendars,
 } from "@keeper.sh/data-schemas";
 import type {
   AdvancedRule,
-  AdvancedRuleInput,
   CreateSyncBody,
   PatchSyncBody,
   SyncActivityEntry,
   SyncActivityPage,
   SyncActivitySummary,
+  SyncCalendarProblem,
   SyncCalendarRole,
   SyncCalendars,
   SyncChange,
   SyncConflict,
   SyncDefinition,
-  SyncDestinationProblem,
   SyncDestinationStatus,
   SyncDetail,
   SyncPair,
   SyncRunRecord,
+  SyncSourceStatus,
   SyncSummary,
 } from "@keeper.sh/data-schemas";
 import { and, asc, desc, eq, getTableColumns, inArray, lt, or, sql } from "drizzle-orm";
@@ -52,25 +57,42 @@ const SYNC_LIMIT_ERROR_MESSAGE = "Free plans include one sync. Upgrade to Keeper
 const SYNC_CONTENT_ERROR_MESSAGE = "This setting requires a Pro plan.";
 const SYNC_NOT_FOUND_ERROR_MESSAGE = "Sync not found.";
 const SYNC_CALENDARS_NOT_FOUND_ERROR_MESSAGE = "Some calendars were not found.";
-const SYNC_CONFLICT_ERROR_MESSAGE = "Some calendars already copy into each other through another sync.";
+const SYNC_STALE_ERROR_MESSAGE = "This sync changed since you opened it.";
 const DEFAULT_ACTIVITY_PAGE_SIZE = 50;
 const MAX_ACTIVITY_PAGE_SIZE = 100;
-const ACTIVITY_SUMMARY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const ACTIVITY_SUMMARY_DAYS = 7;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type DatabaseClient = typeof databaseInstance;
 type DatabaseTransactionCallback = Parameters<DatabaseClient["transaction"]>[0];
 type DatabaseTransactionClient = Parameters<DatabaseTransactionCallback>[0];
 type ReadClient = Pick<DatabaseClient, "select">;
 
+const isUuid = (value: unknown): value is string => typeof value === "string" && UUID_PATTERN.test(value);
+
+const joinNames = (names: readonly string[]): string => {
+  const last = names.at(-1) ?? "";
+  if (names.length < 2) {
+    return last;
+  }
+  return `${names.slice(0, -1).join(", ")} and ${last}`;
+};
+
+const describeConflicts = (conflicts: readonly SyncConflict[]): string => {
+  const names = [...new Map(conflicts.map((conflict) => [conflict.syncId, conflict.syncName])).values()];
+  return `Some calendars already copy into each other through ${joinNames(names)}.`;
+};
+
 class SyncLimitError extends Error {}
 class SyncContentNotAllowedError extends Error {}
 class SyncNotFoundError extends Error {}
+class SyncStaleError extends Error {}
 class SyncValidationError extends Error {}
 class SyncConflictError extends Error {
   readonly conflicts: SyncConflict[];
 
   constructor(conflicts: SyncConflict[]) {
-    super(SYNC_CONFLICT_ERROR_MESSAGE);
+    super(describeConflicts(conflicts));
     this.conflicts = conflicts;
   }
 }
@@ -80,10 +102,13 @@ interface OwnedCalendar {
   id: string;
 }
 
+interface StoredSync extends SyncDefinition {
+  updatedAt: string;
+}
+
 type SyncBody = CreateSyncBody | PatchSyncBody;
 
-const withRuleIds = (rules: readonly AdvancedRuleInput[]): AdvancedRule[] =>
-  rules.map((rule) => ({ ...rule, id: rule.id ?? crypto.randomUUID(), name: rule.name.trim() }));
+const createRuleId = (): string => crypto.randomUUID();
 
 const pickCalendars = (current: SyncCalendars, body: SyncBody): SyncCalendars => normalizeSyncCalendars({
   destinationCalendarIds: body.destinationCalendarIds ?? current.destinationCalendarIds,
@@ -103,7 +128,7 @@ const pickRules = (current: AdvancedRule[], body: SyncBody): AdvancedRule[] => {
   if (!body.rules) {
     return current;
   }
-  return withRuleIds(body.rules);
+  return normalizeAdvancedRules(body.rules, createRuleId);
 };
 
 // A patch replaces calendars and rules wholesale; every other field falls back to what the sync already has.
@@ -131,31 +156,20 @@ const EMPTY_SYNC_DEFINITION: SyncDefinition = {
   sourceCalendarIds: [],
 };
 
-const proContent = (definition: SyncDefinition): string => JSON.stringify([
-  definition.shareAs,
-  definition.busyTitle,
-  definition.markPrivate,
-  definition.skipAllDay,
-  definition.skipFocusTime,
-  definition.skipOutOfOffice,
-  definition.skipTitleKeywords,
-  definition.rules,
-]);
-
-const FREE_CONTENT = proContent(EMPTY_SYNC_DEFINITION);
-
-// Free plans share busy-only with nothing skipped; anything else needs Pro, and settings a sync already has are kept.
 const assertSyncContentAllowed = async (
   canUseEventFilters: () => Promise<boolean>,
   current: SyncDefinition | null,
   next: SyncDefinition,
 ): Promise<void> => {
-  const content = proContent(next);
-  if (content === FREE_CONTENT || (current && proContent(current) === content)) {
-    return;
-  }
-  if (!(await canUseEventFilters())) {
+  if (addsProSettings(current, next) && !(await canUseEventFilters())) {
     throw new SyncContentNotAllowedError(SYNC_CONTENT_ERROR_MESSAGE);
+  }
+};
+
+const assertWithinCalendarLimit = (next: SyncCalendars, current: SyncCalendars | null, limit: number): void => {
+  const error = validateSyncCalendarLimit(next, current, limit);
+  if (error) {
+    throw new SyncLimitError(error);
   }
 };
 
@@ -196,8 +210,8 @@ interface SyncWriteTransaction {
   countUserSyncs: (userId: string) => Promise<number>;
   ensureDestinationSyncStatuses: (destinationCalendarIds: string[]) => Promise<void>;
   findOwnedCalendars: (userId: string, calendarIds: string[]) => Promise<OwnedCalendar[]>;
-  findPairConflicts: (syncId: string | null, pairs: SyncPair[]) => Promise<SyncConflict[]>;
-  findSync: (userId: string, syncId: string) => Promise<SyncDefinition | null>;
+  findPairConflicts: (userId: string, syncId: string | null, pairs: SyncPair[]) => Promise<SyncConflict[]>;
+  findSync: (userId: string, syncId: string) => Promise<StoredSync | null>;
   insertActivity: (syncId: string, changes: SyncChange[]) => Promise<void>;
   insertSync: (userId: string, definition: SyncDefinition) => Promise<string>;
   replaceSyncCalendars: (syncId: string, calendars: SyncCalendars) => Promise<void>;
@@ -209,6 +223,7 @@ interface SyncWriteTransaction {
 interface SyncWriteDependencies {
   canAddSync: (userId: string, currentCount: number) => Promise<boolean>;
   canUseEventFilters: (userId: string) => Promise<boolean>;
+  getSyncCalendarLimit: (userId: string) => Promise<number>;
   withTransaction: <TResult>(callback: (transaction: SyncWriteTransaction) => Promise<TResult>) => Promise<TResult>;
 }
 
@@ -221,7 +236,7 @@ const writeCalendarsAndPairs = async (
   const owned = await transaction.findOwnedCalendars(userId, syncCalendarIds(definition));
   assertCalendarsUsable(definition, owned);
   const pairs = deriveSyncPairs(definition);
-  const conflicts = await transaction.findPairConflicts(syncId, pairs);
+  const conflicts = await transaction.findPairConflicts(userId, syncId, pairs);
   if (conflicts.length > 0) {
     throw new SyncConflictError(conflicts);
   }
@@ -247,6 +262,7 @@ const runCreateSync = async (
   const definition = mergeSyncDefinition(EMPTY_SYNC_DEFINITION, body);
   assertValidDefinition(definition);
   await assertSyncContentAllowed(() => dependencies.canUseEventFilters(userId), null, definition);
+  assertWithinCalendarLimit(definition, null, await dependencies.getSyncCalendarLimit(userId));
 
   return await dependencies.withTransaction(async (transaction) => {
     await transaction.acquireUserLock(userId);
@@ -266,6 +282,7 @@ const runCreateSync = async (
 const isSyncWideChange = (changes: readonly SyncChange[]): boolean =>
   changes.some((change) => change.kind !== "renamed");
 
+// Calendars are only checked when they change, so a sync a calendar deletion emptied can still be renamed or paused.
 const runUpdateSync = async (
   userId: string,
   syncId: string,
@@ -277,15 +294,22 @@ const runUpdateSync = async (
   if (!current) {
     throw new SyncNotFoundError(SYNC_NOT_FOUND_ERROR_MESSAGE);
   }
+  if (typeof body.expectedUpdatedAt === "string" && body.expectedUpdatedAt !== current.updatedAt) {
+    throw new SyncStaleError(SYNC_STALE_ERROR_MESSAGE);
+  }
   const next = mergeSyncDefinition(current, body);
-  assertValidDefinition(next);
+  const calendarsChanged = !sameCalendars(current, next);
+  if (calendarsChanged) {
+    assertValidDefinition(next);
+    assertWithinCalendarLimit(next, current, await dependencies.getSyncCalendarLimit(userId));
+  }
   await assertSyncContentAllowed(() => dependencies.canUseEventFilters(userId), current, next);
 
   const changes = diffSyncChanges(current, next);
   if (changes.length === 0) {
     return changes;
   }
-  if (isSyncWideChange(changes)) {
+  if (calendarsChanged) {
     const pairs = await writeCalendarsAndPairs(transaction, userId, syncId, next);
     await persistPairs(transaction, syncId, next, pairs);
   }
@@ -347,7 +371,10 @@ const toDefinition = (row: SyncRow, calendars: SyncCalendars | undefined): SyncD
   sourceCalendarIds: calendars?.sourceCalendarIds ?? [],
 });
 
-const findSyncForUser = async (client: ReadClient, userId: string, syncId: string): Promise<SyncDefinition | null> => {
+const findSyncForUser = async (client: ReadClient, userId: string, syncId: string): Promise<StoredSync | null> => {
+  if (!isUuid(syncId)) {
+    return null;
+  }
   const [row] = await client
     .select()
     .from(syncsTable)
@@ -357,7 +384,7 @@ const findSyncForUser = async (client: ReadClient, userId: string, syncId: strin
     return null;
   }
   const calendars = await readSyncCalendars(client, [row.id]);
-  return toDefinition(row, calendars.get(row.id));
+  return { ...toDefinition(row, calendars.get(row.id)), updatedAt: row.updatedAt.toISOString() };
 };
 
 const toSyncColumns = (definition: SyncDefinition) => ({
@@ -400,7 +427,7 @@ const createSyncWriteTransaction = (client: DatabaseTransactionClient): SyncWrit
       .from(calendarsTable)
       .where(and(eq(calendarsTable.userId, userId), inArray(calendarsTable.id, calendarIds)));
   },
-  findPairConflicts: async (syncId, pairs) => {
+  findPairConflicts: async (userId, syncId, pairs) => {
     if (pairs.length === 0) {
       return [];
     }
@@ -415,6 +442,7 @@ const createSyncWriteTransaction = (client: DatabaseTransactionClient): SyncWrit
       .from(sourceDestinationMappingsTable)
       .innerJoin(syncsTable, eq(sourceDestinationMappingsTable.syncId, syncsTable.id))
       .where(and(
+        eq(syncsTable.userId, userId),
         inArray(sourceDestinationMappingsTable.sourceCalendarId, [...new Set(pairs.map((pair) => pair.sourceCalendarId))]),
         inArray(sourceDestinationMappingsTable.destinationCalendarId, [...new Set(pairs.map((pair) => pair.destinationCalendarId))]),
       ));
@@ -480,6 +508,7 @@ const createSyncWriteDependencies = async (): Promise<SyncWriteDependencies> => 
   return {
     canAddSync: (userId, currentCount) => premiumService.canAddSync(userId, currentCount),
     canUseEventFilters: (userId) => premiumService.canUseEventFilters(userId),
+    getSyncCalendarLimit: (userId) => premiumService.getUserSyncCalendarLimit(userId),
     withTransaction: (callback) => database.transaction((client) => callback(createSyncWriteTransaction(client))),
   };
 };
@@ -505,60 +534,107 @@ const findOwnedRequestedDestinationIds = async (client: ReadClient, userId: stri
   return owned.map((calendar) => calendar.id);
 };
 
+const deleteSyncRow = async (client: DatabaseTransactionClient, userId: string, syncId: string): Promise<boolean> => {
+  await acquireUserSyncLock(client, userId);
+  const [deleted] = await client
+    .delete(syncsTable)
+    .where(and(eq(syncsTable.id, syncId), eq(syncsTable.userId, userId)))
+    .returning({ id: syncsTable.id });
+  if (!deleted) {
+    return false;
+  }
+  await requestUserSync(client, userId);
+  return true;
+};
+
+interface SyncLockDependencies {
+  deleteSync: (userId: string, syncId: string) => Promise<boolean>;
+  findOwnedDestinationIds: (userId: string, body: SyncBody) => Promise<string[]>;
+  findSyncDestinationIds: (userId: string, syncId: string) => Promise<string[]>;
+  scheduleSync: (userId: string) => void;
+  withLocks: <TResult>(
+    userId: string,
+    resolveDestinationCalendarIds: () => Promise<string[]>,
+    callback: () => Promise<TResult>,
+  ) => Promise<{ destinationCalendarIds: string[]; result: TResult }>;
+}
+
+const createSyncLockDependencies = async (): Promise<SyncLockDependencies> => {
+  const { database } = await import("@/context");
+  return {
+    deleteSync: (userId, syncId) => database.transaction((client) => deleteSyncRow(client, userId, syncId)),
+    findOwnedDestinationIds: (userId, body) => findOwnedRequestedDestinationIds(database, userId, body),
+    findSyncDestinationIds: (userId, syncId) => findSyncDestinationIds(database, userId, syncId),
+    scheduleSync: scheduleMappingReplacementSync,
+    withLocks: withMappingMutationLocks,
+  };
+};
+
 const isRenameOnly = (body: PatchSyncBody): boolean =>
-  Object.keys(body).every((key) => key === "name");
+  Object.keys(body).every((key) => key === "name" || key === "expectedUpdatedAt");
 
 // Destinations are locked before the write, from both the old and the new pairs, so no push races the change.
-const createSync = async (userId: string, body: CreateSyncBody): Promise<string> => {
-  const { database } = await import("@/context");
-  const dependencies = await createSyncWriteDependencies();
-  const { result } = await withMappingMutationLocks(
+const runLockedCreateSync = async (
+  userId: string,
+  body: CreateSyncBody,
+  writes: SyncWriteDependencies,
+  locks: SyncLockDependencies,
+): Promise<string> => {
+  const { result } = await locks.withLocks(
     userId,
-    () => findOwnedRequestedDestinationIds(database, userId, body),
-    () => runCreateSync(userId, body, dependencies),
+    () => locks.findOwnedDestinationIds(userId, body),
+    () => runCreateSync(userId, body, writes),
   );
-  scheduleMappingReplacementSync(userId);
+  locks.scheduleSync(userId);
   return result;
 };
 
-const updateSync = async (userId: string, syncId: string, body: PatchSyncBody): Promise<void> => {
-  const dependencies = await createSyncWriteDependencies();
+const runLockedUpdateSync = async (
+  userId: string,
+  syncId: string,
+  body: PatchSyncBody,
+  writes: SyncWriteDependencies,
+  locks: SyncLockDependencies,
+): Promise<void> => {
   if (isRenameOnly(body)) {
-    await runUpdateSync(userId, syncId, body, dependencies);
+    await runUpdateSync(userId, syncId, body, writes);
     return;
   }
-  const { database } = await import("@/context");
-  const { result } = await withMappingMutationLocks(
+  const { result } = await locks.withLocks(
     userId,
     async () => [
-      ...await findSyncDestinationIds(database, userId, syncId),
-      ...await findOwnedRequestedDestinationIds(database, userId, body),
+      ...await locks.findSyncDestinationIds(userId, syncId),
+      ...await locks.findOwnedDestinationIds(userId, body),
     ],
-    () => runUpdateSync(userId, syncId, body, dependencies),
+    () => runUpdateSync(userId, syncId, body, writes),
   );
   if (isSyncWideChange(result)) {
-    scheduleMappingReplacementSync(userId);
+    locks.scheduleSync(userId);
   }
 };
 
-const deleteSync = async (userId: string, syncId: string): Promise<void> => {
-  const { database } = await import("@/context");
-  await withMappingMutationLocks(
+const runLockedDeleteSync = async (userId: string, syncId: string, locks: SyncLockDependencies): Promise<void> => {
+  await locks.withLocks(
     userId,
-    () => findSyncDestinationIds(database, userId, syncId),
-    () => database.transaction(async (client) => {
-      await acquireUserSyncLock(client, userId);
-      const [deleted] = await client
-        .delete(syncsTable)
-        .where(and(eq(syncsTable.id, syncId), eq(syncsTable.userId, userId)))
-        .returning({ id: syncsTable.id });
-      if (!deleted) {
+    () => locks.findSyncDestinationIds(userId, syncId),
+    async () => {
+      if (!(await locks.deleteSync(userId, syncId))) {
         throw new SyncNotFoundError(SYNC_NOT_FOUND_ERROR_MESSAGE);
       }
-      await requestUserSync(client, userId);
-    }),
+    },
   );
-  scheduleMappingReplacementSync(userId);
+  locks.scheduleSync(userId);
+};
+
+const createSync = async (userId: string, body: CreateSyncBody): Promise<string> =>
+  await runLockedCreateSync(userId, body, await createSyncWriteDependencies(), await createSyncLockDependencies());
+
+const updateSync = async (userId: string, syncId: string, body: PatchSyncBody): Promise<void> => {
+  await runLockedUpdateSync(userId, syncId, body, await createSyncWriteDependencies(), await createSyncLockDependencies());
+};
+
+const deleteSync = async (userId: string, syncId: string): Promise<void> => {
+  await runLockedDeleteSync(userId, syncId, await createSyncLockDependencies());
 };
 
 interface PairStatusRow {
@@ -566,6 +642,7 @@ interface PairStatusRow {
   destinationCalendarId: string;
   disabled: boolean;
   failureCount: number;
+  lastErrorAt: Date | null;
   lastSyncedAt: Date | null;
   needsReauthentication: boolean;
   skippedCount: number;
@@ -582,6 +659,7 @@ const readPairStatuses = async (client: ReadClient, syncIds: string[]): Promise<
       destinationCalendarId: sourceDestinationMappingsTable.destinationCalendarId,
       disabled: calendarsTable.disabled,
       failureCount: calendarsTable.failureCount,
+      lastErrorAt: sourceDestinationMappingsTable.lastErrorAt,
       lastSyncedAt: sourceDestinationMappingsTable.lastSyncedAt,
       needsReauthentication: calendarAccountsTable.needsReauthentication,
       skippedCount: sourceDestinationMappingsTable.skippedCount,
@@ -593,18 +671,46 @@ const readPairStatuses = async (client: ReadClient, syncIds: string[]): Promise<
     .where(inArray(sourceDestinationMappingsTable.syncId, syncIds));
 };
 
-const resolveDestinationProblem = (row: PairStatusRow): SyncDestinationProblem | null => {
-  if (row.needsReauthentication) {
+interface SourceHealthRow {
+  calendarId: string;
+  disabled: boolean;
+  ingestFailureCount: number;
+  needsReauthentication: boolean;
+}
+
+const readSourceHealth = async (client: ReadClient, calendarIds: string[]): Promise<Map<string, SourceHealthRow>> => {
+  if (calendarIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client
+    .select({
+      calendarId: calendarsTable.id,
+      disabled: calendarsTable.disabled,
+      ingestFailureCount: calendarsTable.ingestFailureCount,
+      needsReauthentication: calendarAccountsTable.needsReauthentication,
+    })
+    .from(calendarsTable)
+    .innerJoin(calendarAccountsTable, eq(calendarsTable.accountId, calendarAccountsTable.id))
+    .where(inArray(calendarsTable.id, calendarIds));
+  return new Map(rows.map((row) => [row.calendarId, row]));
+};
+
+const resolveCalendarProblem = (health: { disabled: boolean; failing: boolean; needsReauthentication: boolean }): SyncCalendarProblem | null => {
+  if (health.needsReauthentication) {
     return "reauth";
   }
-  if (row.disabled) {
+  if (health.disabled) {
     return "disabled";
   }
-  if (row.failureCount > 0) {
+  if (health.failing) {
     return "failing";
   }
   return null;
 };
+
+// A paused calendar is a choice, not a fault, so it's reported without marking the sync.
+const isFault = (status: { problem: SyncCalendarProblem | null }): boolean =>
+  status.problem !== null && status.problem !== "disabled";
 
 const latest = (left: Date | null, right: Date | null): Date | null => {
   if (!left) {
@@ -616,27 +722,67 @@ const latest = (left: Date | null, right: Date | null): Date | null => {
   return right;
 };
 
+interface DestinationTally {
+  calendarId: string;
+  copiedCount: number;
+  erroring: boolean;
+  row: PairStatusRow;
+  skippedCount: number;
+  syncedAt: Date | null;
+}
+
 const summarizeDestinations = (rows: readonly PairStatusRow[]): SyncDestinationStatus[] => {
-  const byDestination = new Map<string, SyncDestinationStatus & { syncedAt: Date | null }>();
+  const byDestination = new Map<string, DestinationTally>();
   for (const row of rows) {
-    const status = byDestination.get(row.destinationCalendarId) ?? {
+    const tally = byDestination.get(row.destinationCalendarId) ?? {
       calendarId: row.destinationCalendarId,
       copiedCount: 0,
-      lastSyncedAt: null,
-      problem: resolveDestinationProblem(row),
+      erroring: false,
+      row,
       skippedCount: 0,
       syncedAt: null,
     };
-    status.copiedCount += row.copiedCount;
-    status.skippedCount += row.skippedCount;
-    status.syncedAt = latest(status.syncedAt, row.lastSyncedAt);
-    byDestination.set(row.destinationCalendarId, status);
+    tally.copiedCount += row.copiedCount;
+    tally.skippedCount += row.skippedCount;
+    tally.erroring ||= row.lastErrorAt !== null;
+    tally.syncedAt = latest(tally.syncedAt, row.lastSyncedAt);
+    byDestination.set(row.destinationCalendarId, tally);
   }
-  return [...byDestination.values()].map(({ syncedAt, ...status }) => ({
-    ...status,
-    lastSyncedAt: syncedAt?.toISOString() ?? null,
+  return [...byDestination.values()].map((tally) => ({
+    calendarId: tally.calendarId,
+    copiedCount: tally.copiedCount,
+    lastSyncedAt: tally.syncedAt?.toISOString() ?? null,
+    problem: resolveCalendarProblem({
+      disabled: tally.row.disabled,
+      failing: tally.row.failureCount > 0 || tally.erroring,
+      needsReauthentication: tally.row.needsReauthentication,
+    }),
+    skippedCount: tally.skippedCount,
   }));
 };
+
+const sourceCalendarIdsOf = (calendars: SyncCalendars): string[] => {
+  if (calendars.mode === "both_ways") {
+    return calendars.memberCalendarIds;
+  }
+  return calendars.sourceCalendarIds;
+};
+
+const summarizeSources = (definition: SyncDefinition, health: ReadonlyMap<string, SourceHealthRow>): SyncSourceStatus[] =>
+  sourceCalendarIdsOf(definition).map((calendarId) => {
+    const row = health.get(calendarId);
+    if (!row) {
+      return { calendarId, problem: null };
+    }
+    return {
+      calendarId,
+      problem: resolveCalendarProblem({
+        disabled: row.disabled,
+        failing: row.ingestFailureCount > 0,
+        needsReauthentication: row.needsReauthentication,
+      }),
+    };
+  });
 
 const sumOf = <TItem>(items: readonly TItem[], value: (item: TItem) => number): number => {
   let total = 0;
@@ -646,8 +792,14 @@ const sumOf = <TItem>(items: readonly TItem[], value: (item: TItem) => number): 
   return total;
 };
 
-const toSummary = (row: SyncRow, definition: SyncDefinition, pairRows: readonly PairStatusRow[]): SyncDetail => {
+const buildSyncDetail = (
+  row: SyncRow,
+  definition: SyncDefinition,
+  pairRows: readonly PairStatusRow[],
+  health: ReadonlyMap<string, SourceHealthRow>,
+): SyncDetail => {
   const destinations = summarizeDestinations(pairRows);
+  const sources = summarizeSources(definition, health);
   let lastSyncedAt: Date | null = null;
   for (const pair of pairRows) {
     lastSyncedAt = latest(lastSyncedAt, pair.lastSyncedAt);
@@ -661,8 +813,9 @@ const toSummary = (row: SyncRow, definition: SyncDefinition, pairRows: readonly 
     lastSyncedAt: lastSyncedAt?.toISOString() ?? null,
     pairCount: pairRows.length,
     skippedCount: sumOf(destinations, (destination) => destination.skippedCount),
+    sources,
     state: resolveSyncState({
-      hasProblem: destinations.some((destination) => destination.problem !== null),
+      hasProblem: destinations.some((destination) => isFault(destination)) || sources.some((source) => isFault(source)),
       pairCount: pairRows.length,
       paused: definition.paused,
     }),
@@ -676,10 +829,14 @@ const readSyncDetails = async (client: ReadClient, rows: SyncRow[]): Promise<Syn
     readSyncCalendars(client, syncIds),
     readPairStatuses(client, syncIds),
   ]);
-  return rows.map((row) => toSummary(
+  const entries = rows.map((row) => ({ definition: toDefinition(row, calendarsBySyncId.get(row.id)), row }));
+  const sourceIds = new Set(entries.flatMap(({ definition }) => sourceCalendarIdsOf(definition)));
+  const health = await readSourceHealth(client, [...sourceIds]);
+  return entries.map(({ definition, row }) => buildSyncDetail(
     row,
-    toDefinition(row, calendarsBySyncId.get(row.id)),
+    definition,
     pairRows.filter((pair) => pair.syncId === row.id),
+    health,
   ));
 };
 
@@ -690,10 +847,13 @@ const listSyncs = async (client: ReadClient, userId: string): Promise<SyncSummar
     .where(eq(syncsTable.userId, userId))
     .orderBy(asc(syncsTable.createdAt), asc(syncsTable.id));
   const details = await readSyncDetails(client, rows);
-  return details.map(({ destinations: _destinations, ...summary }) => summary);
+  return details.map(({ destinations: _destinations, sources: _sources, ...summary }) => summary);
 };
 
 const findSyncDetail = async (client: ReadClient, userId: string, syncId: string): Promise<SyncDetail | null> => {
+  if (!isUuid(syncId)) {
+    return null;
+  }
   const rows = await client
     .select()
     .from(syncsTable)
@@ -711,6 +871,16 @@ interface ActivityCursor {
 }
 
 const CURSOR_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
+const SECONDS_PRECISION_LENGTH = 19;
+
+const isRealTimestamp = (value: string): boolean => {
+  if (!CURSOR_TIMESTAMP_PATTERN.test(value)) {
+    return false;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed)
+    && new Date(parsed).toISOString().slice(0, SECONDS_PRECISION_LENGTH) === value.slice(0, SECONDS_PRECISION_LENGTH);
+};
 
 const encodeActivityCursor = (cursor: ActivityCursor): string => `${cursor.createdAt}_${cursor.id}`;
 
@@ -721,7 +891,7 @@ const decodeActivityCursor = (value: string | null): ActivityCursor | null => {
   const separator = value.indexOf("_");
   const createdAt = value.slice(0, separator);
   const id = value.slice(separator + 1);
-  if (separator === -1 || !CURSOR_TIMESTAMP_PATTERN.test(createdAt) || !id) {
+  if (separator === -1 || !isRealTimestamp(createdAt) || !isUuid(id)) {
     return null;
   }
   return { createdAt, id };
@@ -742,49 +912,49 @@ const toActivityEntry = (row: typeof syncActivityTable.$inferSelect): SyncActivi
   return { change: row.payload as unknown as SyncChange, createdAt, id: row.id, kind: "change" };
 };
 
-interface SyncRunRow {
-  createdAt: Date;
-  run: SyncRunRecord;
+interface PairSkips {
+  skippedBy: SyncRunRecord["skippedBy"];
+  skippedCount: number;
 }
 
-// Rows arrive newest first, so the first run seen for a destination is its latest.
-const summarizeSyncRuns = (rows: readonly SyncRunRow[], since: Date): SyncActivitySummary => {
-  const latestByDestination = new Map<string, SyncRunRecord>();
-  let added = 0;
-  let removed = 0;
-  for (const { createdAt, run } of rows) {
-    // A shared destination's run carries every sync's copies, so it can't be credited to this one.
-    if (createdAt >= since && !run.sharedDestination) {
-      added += run.added;
-      removed += run.removed;
-    }
-    if (!latestByDestination.has(run.destinationCalendarId)) {
-      latestByDestination.set(run.destinationCalendarId, run);
-    }
-  }
-
+const summarizePairSkips = (pairs: readonly PairSkips[]): Pick<SyncActivitySummary, "skipped" | "skippedBy"> => {
   const reasons = new Map<string, SyncRunRecord["skippedBy"][number]>();
-  let skipped = 0;
-  for (const run of latestByDestination.values()) {
-    skipped += run.skipped;
-    for (const reason of run.skippedBy) {
+  for (const pair of pairs) {
+    for (const reason of pair.skippedBy) {
       const current = reasons.get(reason.ruleId) ?? { count: 0, name: reason.name, ruleId: reason.ruleId };
       current.count += reason.count;
       reasons.set(reason.ruleId, current);
     }
   }
-  const skippedBy = [...reasons.values()].toSorted((first, second) => second.count - first.count);
-  return { added, removed, skipped, skippedBy };
+  return {
+    skipped: sumOf(pairs, (pair) => pair.skippedCount),
+    skippedBy: [...reasons.values()].toSorted((first, second) => second.count - first.count),
+  };
 };
 
-const summarizeSyncActivity = async (client: ReadClient, syncId: string, now: Date): Promise<SyncActivitySummary> => {
-  const rows = await client
-    .select({ createdAt: syncActivityTable.createdAt, payload: syncActivityTable.payload })
-    .from(syncActivityTable)
-    .where(and(eq(syncActivityTable.syncId, syncId), eq(syncActivityTable.kind, "run")))
-    .orderBy(desc(syncActivityTable.createdAt), desc(syncActivityTable.id));
-  const runs = rows.map((row) => ({ createdAt: row.createdAt, run: row.payload as unknown as SyncRunRecord }));
-  return summarizeSyncRuns(runs, new Date(now.getTime() - ACTIVITY_SUMMARY_WINDOW_MS));
+// The window is today plus the six UTC days before it, matching how the engine buckets sync_activity_days.
+const summarizeSyncActivity = async (client: ReadClient, syncId: string): Promise<SyncActivitySummary> => {
+  const [[totals], pairs] = await Promise.all([
+    client
+      .select({
+        added: sql<string>`coalesce(sum(${syncActivityDaysTable.added}), 0)`,
+        removed: sql<string>`coalesce(sum(${syncActivityDaysTable.removed}), 0)`,
+      })
+      .from(syncActivityDaysTable)
+      .where(and(
+        eq(syncActivityDaysTable.syncId, syncId),
+        sql`${syncActivityDaysTable.day} >= (now() at time zone 'utc')::date - ${sql.raw(String(ACTIVITY_SUMMARY_DAYS - 1))}`,
+      )),
+    client
+      .select({ skippedBy: sourceDestinationMappingsTable.skippedBy, skippedCount: sourceDestinationMappingsTable.skippedCount })
+      .from(sourceDestinationMappingsTable)
+      .where(eq(sourceDestinationMappingsTable.syncId, syncId)),
+  ]);
+  return {
+    added: Number(totals?.added ?? 0),
+    removed: Number(totals?.removed ?? 0),
+    ...summarizePairSkips(pairs),
+  };
 };
 
 // Only the first page carries the summary, so paging back doesn't recount the window.
@@ -792,7 +962,7 @@ const readFirstPageSummary = (client: ReadClient, syncId: string, cursor: Activi
   if (cursor) {
     return Promise.resolve(null);
   }
-  return summarizeSyncActivity(client, syncId, new Date());
+  return summarizeSyncActivity(client, syncId);
 };
 
 const listSyncActivity = async (
@@ -835,26 +1005,38 @@ const listSyncActivity = async (
 };
 
 export {
+  SYNC_CALENDARS_NOT_FOUND_ERROR_MESSAGE,
   SYNC_CONTENT_ERROR_MESSAGE,
   SYNC_LIMIT_ERROR_MESSAGE,
   SYNC_NOT_FOUND_ERROR_MESSAGE,
+  SYNC_STALE_ERROR_MESSAGE,
   SyncConflictError,
   SyncContentNotAllowedError,
   SyncLimitError,
   SyncNotFoundError,
+  SyncStaleError,
   SyncValidationError,
   assertSyncContentAllowed,
+  buildSyncDetail,
   createSync,
+  createSyncWriteTransaction,
   decodeActivityCursor,
   deleteSync,
+  deleteSyncRow,
+  findSyncDestinationIds,
+  findOwnedRequestedDestinationIds,
   findSyncDetail,
   findSyncForUser,
+  isUuid,
   listSyncActivity,
   listSyncs,
-  summarizeSyncRuns,
   mergeSyncDefinition,
   runCreateSync,
+  runLockedCreateSync,
+  runLockedDeleteSync,
+  runLockedUpdateSync,
   runUpdateSync,
+  summarizePairSkips,
   updateSync,
 };
-export type { SyncActivityPage, SyncWriteDependencies, SyncWriteTransaction };
+export type { PairStatusRow, SourceHealthRow, StoredSync, SyncActivityPage, SyncLockDependencies, SyncWriteDependencies, SyncWriteTransaction };
