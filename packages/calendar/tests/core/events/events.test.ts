@@ -3,10 +3,12 @@ import { DEFAULT_SYNC_SETTINGS, compileSyncRules } from "@keeper.sh/data-schemas
 import {
   excludeWithdrawnInstances,
   isEventInDestinationReconciliationWindow,
+  projectDestinationEvents,
   projectSyncableEvent,
   shouldExcludeSyncEvent,
 } from "../../../src/core/events/events";
 import { materializeRecurrenceEvents } from "../../../src/core/events/recurrence-materializer";
+import type { DestinationEventRow } from "../../../src/core/events/events";
 import type { SyncableEvent } from "../../../src/core/types";
 
 const createEvent = (overrides: Partial<{
@@ -241,5 +243,69 @@ describe("excludeWithdrawnInstances", () => {
 
     expect(untouchedSeries).toBe(otherSeries);
     expect(untouchedCalendar).toBe(otherCalendar);
+  });
+});
+
+const row = (overrides: Partial<DestinationEventRow> & Pick<DestinationEventRow, "id">): DestinationEventRow => ({
+  availability: "busy",
+  calendarId: "work",
+  calendarName: "Work",
+  calendarUrl: null,
+  description: null,
+  endTime: new Date("2026-01-05T13:00:00.000Z"),
+  exceptionDates: null,
+  isAllDay: false,
+  location: null,
+  recurrenceId: null,
+  recurrenceRule: null,
+  sourceEventType: "default",
+  sourceEventUid: `uid-${overrides.id}`,
+  startTime: new Date("2026-01-05T12:00:00.000Z"),
+  startTimeZone: null,
+  title: "Planning",
+  ...overrides,
+});
+
+describe("projectDestinationEvents", () => {
+  const syncWindow = { timeMax: new Date("2026-02-01T00:00:00.000Z"), timeMin: new Date("2026-01-01T00:00:00.000Z") };
+  const skipLunch = {
+    actions: [{ kind: "skip" as const }],
+    conditions: [{ kind: "title_contains" as const, value: "lunch" }],
+    id: "skip:keywords",
+    match: "all" as const,
+    name: "Titled words",
+  };
+  const rules = new Map([["work", [skipLunch, busyOnly]]]);
+  const daily = JSON.stringify({ count: 10, frequency: "DAILY" });
+
+  it("counts skips in the same units as copies: occurrences inside the window", () => {
+    const { diagnostics, events } = projectDestinationEvents([
+      row({ id: "standup", recurrenceRule: daily, title: "Standup" }),
+      row({ id: "lunch", recurrenceRule: daily, title: "Lunch" }),
+      row({ endTime: new Date("2026-06-01T13:00:00.000Z"), id: "lunch-later", startTime: new Date("2026-06-01T12:00:00.000Z"), title: "Lunch" }),
+      row({ endTime: new Date("2025-06-01T13:00:00.000Z"), id: "lunch-earlier", startTime: new Date("2025-06-01T12:00:00.000Z"), title: "Lunch" }),
+    ], rules, syncWindow);
+
+    expect(events).toHaveLength(10);
+    expect(diagnostics.sourceOutcomes).toEqual({
+      work: { copied: 10, skipped: 10, skippedBy: { "skip:keywords": { count: 10, name: "Titled words" } } },
+    });
+  });
+
+  it("doesn't count a skipped series' slot that a copied edit took over", () => {
+    const { diagnostics, events } = projectDestinationEvents([
+      row({ id: "lunch", recurrenceRule: daily, title: "Lunch" }),
+      row({
+        endTime: new Date("2026-01-07T14:00:00.000Z"),
+        id: "lunch-moved",
+        recurrenceId: new Date("2026-01-07T12:00:00.000Z"),
+        sourceEventUid: "uid-lunch",
+        startTime: new Date("2026-01-07T13:00:00.000Z"),
+        title: "Customer visit",
+      }),
+    ], rules, syncWindow);
+
+    expect(events).toHaveLength(1);
+    expect(diagnostics.sourceOutcomes.work).toMatchObject({ copied: 1, skipped: 9 });
   });
 });

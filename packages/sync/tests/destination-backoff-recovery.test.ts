@@ -11,6 +11,7 @@ const mappedSourceCalendarIdsMock = vi.fn((): Promise<string[]> => Promise.resol
 const acquireMock = vi.fn();
 
 vi.mock("../src/sync-run-recording", () => ({
+  recordSyncFailure: () => Promise.resolve(),
   recordSyncRun: () => Promise.resolve(),
 }));
 

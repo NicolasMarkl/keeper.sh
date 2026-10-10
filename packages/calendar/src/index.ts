@@ -171,18 +171,12 @@ export {
 } from "./core/utils/fetch-with-timeout";
 export {
   getEventsForCalendarsWithDiagnostics,
-  getEventsForDestination,
   getMappedSourceCalendarIds,
   getPausedSourceCalendarIds,
-  getSyncRulesForDestination,
-  projectSyncableEvent,
   shouldExcludeSyncEvent,
   type DestinationEventReadDiagnostics,
   type SourceProjectionOutcome,
-  type DestinationEventReadOptions,
   type DestinationEventReadResult,
-  type DestinationSyncRule,
-  type RulesBySourceCalendarId,
 } from "./core/events/events";
 export {
   findSourceEventsExceedingRecurrenceBudget,
@@ -376,7 +370,10 @@ export {
 export type {
   CalendarSyncProvider,
   PendingChanges,
+  SourceSyncTallies,
+  SourceSyncTally,
   SyncCalendarOptions,
+  SyncCalendarResult,
 } from "./core/sync-engine";
 export { createRedisGenerationCheck } from "./core/sync-engine/generation";
 export type { GenerationStore } from "./core/sync-engine/generation";

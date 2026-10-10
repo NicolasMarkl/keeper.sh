@@ -44,6 +44,7 @@ const applyPendingChanges = (changes: PendingChanges): void => {
 };
 
 vi.mock("../src/sync-run-recording", () => ({
+  recordSyncFailure: () => Promise.resolve(),
   recordSyncRun: () => Promise.resolve(),
 }));
 

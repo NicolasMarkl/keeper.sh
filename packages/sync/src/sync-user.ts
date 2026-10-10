@@ -48,7 +48,7 @@ import {
 } from "./destination-errors";
 import type { DestinationAttemptVerdict } from "./destination-errors";
 import { resolveSyncProvider } from "./resolve-provider";
-import { recordSyncRun } from "./sync-run-recording";
+import { recordSyncFailure, recordSyncRun } from "./sync-run-recording";
 import type { SyncRunRecordingInput } from "./sync-run-recording";
 import type { OAuthConfig } from "./resolve-provider";
 import {
@@ -624,12 +624,19 @@ interface DestinationSyncSkip {
   reason: DestinationSkipReason;
 }
 
+interface ActivityRecordFailure {
+  calendarId: string;
+  error: unknown;
+}
+
 interface SyncCallbacks {
   onSyncEvent?: (event: Record<string, unknown>) => void;
   onProgress?: (update: SyncProgressUpdate) => void;
   onCalendarComplete?: (completion: CalendarSyncCompletion) => void;
   onCalendarError?: (failure: CalendarSyncFailure) => void;
   onCalendarSkipped?: (skip: DestinationSyncSkip) => void;
+  // Fires after the destination's own wide event has been flushed, so it is reported on a line of its own.
+  onActivityRecordError?: (failure: ActivityRecordFailure) => void;
 }
 
 interface DestinationAttempt {
@@ -746,6 +753,20 @@ const applyDestinationAttemptVerdict = async (
   return true;
 };
 
+const recordActivitySafely = async (
+  record: () => Promise<void>,
+  calendarId: string,
+  callbacks?: SyncCallbacks,
+): Promise<string[]> => {
+  try {
+    await record();
+    return [];
+  } catch (error) {
+    callbacks?.onActivityRecordError?.({ calendarId, error });
+    return [`Failed to record sync activity: ${getErrorMessage(error)}`];
+  }
+};
+
 const recordDestinationAttemptFailure = async (
   options: {
     callbacks?: SyncCallbacks;
@@ -754,10 +775,11 @@ const recordDestinationAttemptFailure = async (
     durationMs: number;
     error: unknown;
     handle: SyncLockHandle;
+    recordActivity: boolean;
     syncEvent: Record<string, unknown> | null;
   },
 ): Promise<string[]> => {
-  const { callbacks, database, destination, durationMs, error, handle, syncEvent } = options;
+  const { callbacks, database, destination, durationMs, error, handle, recordActivity, syncEvent } = options;
   const verdict = resolveThrownDestinationVerdict(error);
   const stillOwned = await applyDestinationAttemptVerdict({
     database,
@@ -776,19 +798,17 @@ const recordDestinationAttemptFailure = async (
     backoffApplied: stillOwned && verdict === "failed",
     ...(syncEvent && { syncEvent }),
   });
-  return [getErrorMessage(error)];
-};
-
-const recordSyncRunSafely = async (
-  database: BunSQLDatabase,
-  input: SyncRunRecordingInput,
-): Promise<string[]> => {
-  try {
-    await recordSyncRun(database, input);
-    return [];
-  } catch (error) {
-    return [`Failed to record sync activity: ${getErrorMessage(error)}`];
+  if (!stillOwned || !recordActivity) {
+    return [getErrorMessage(error)];
   }
+  return [
+    getErrorMessage(error),
+    ...await recordActivitySafely(
+      () => recordSyncFailure(database, destination.calendarId),
+      destination.calendarId,
+      callbacks,
+    ),
+  ];
 };
 
 const countMappedSources = async (
@@ -942,6 +962,7 @@ const syncDestinationsForUser = async (
           unmatchedByRuleCount: 0,
         };
         let pausedSourceCalendarIds: ReadonlySet<string> = new Set();
+        let readSourceCalendarIds: ReadonlySet<string> = new Set();
         let localReadDurationMs = 0;
         let remoteReadDurationMs = 0;
         let sourceCalendarIdsAtLocalRead = sourceCalendarIds;
@@ -1018,14 +1039,16 @@ const syncDestinationsForUser = async (
                     authoritativeSourceWindows,
                   );
                   if (localReadWindow) {
+                    const readSourceCalendarIdList = [...authoritativeSourceWindows.keys()].filter(
+                      (sourceCalendarId) => !pausedSourceCalendarIds.has(sourceCalendarId),
+                    );
                     const eventRead = await getEventsForCalendarsWithDiagnostics(
                       lockedDatabase,
-                      [...authoritativeSourceWindows.keys()].filter(
-                        (sourceCalendarId) => !pausedSourceCalendarIds.has(sourceCalendarId),
-                      ),
+                      readSourceCalendarIdList,
                       localReadWindow,
                       { destinationCalendarId: destination.calendarId },
                     );
+                    readSourceCalendarIds = new Set(readSourceCalendarIdList);
                     eventReadDiagnostics = eventRead.diagnostics;
                     localEvents.push(...eventRead.events);
                   }
@@ -1127,12 +1150,18 @@ const syncDestinationsForUser = async (
           return;
         }
         if (!calendarAttempt.superseded) {
-          errors.push(...await recordSyncRunSafely(database, {
+          const recording: SyncRunRecordingInput = {
             destinationCalendarId: destination.calendarId,
             pausedSourceCalendarIds,
-            result,
+            readSourceCalendarIds,
             sourceOutcomes: eventReadDiagnostics.sourceOutcomes,
-          }));
+            sourceTallies: result.sources,
+          };
+          errors.push(...await recordActivitySafely(
+            () => recordSyncRun(database, recording),
+            destination.calendarId,
+            callbacks,
+          ));
         }
 
         added += result.added;
@@ -1153,6 +1182,7 @@ const syncDestinationsForUser = async (
           durationMs: extractNumericField(calendarAttempt.syncEvent, "duration_ms"),
           error,
           handle,
+          recordActivity: !calendarAttempt.superseded && !isDestinationAttemptSuperseded(config, false),
           syncEvent: calendarAttempt.syncEvent,
         }));
       } finally {
@@ -1186,6 +1216,7 @@ export {
   syncDestinationsForUser,
 };
 export type {
+  ActivityRecordFailure,
   CalendarSyncCompletion,
   CalendarSyncFailure,
   DestinationSkipReason,

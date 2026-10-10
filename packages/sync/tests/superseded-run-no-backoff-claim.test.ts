@@ -7,6 +7,7 @@ const handleIsCurrentMock = vi.fn(() => Promise.resolve(true));
 const acquireMock = vi.fn();
 
 vi.mock("../src/sync-run-recording", () => ({
+  recordSyncFailure: () => Promise.resolve(),
   recordSyncRun: () => Promise.resolve(),
 }));
 

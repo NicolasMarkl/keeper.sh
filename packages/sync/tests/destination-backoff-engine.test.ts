@@ -22,6 +22,7 @@ const CALENDAR_ID = "destination-1";
 const SOURCE_ID = "source-1";
 
 vi.mock("../src/sync-run-recording", () => ({
+  recordSyncFailure: () => Promise.resolve(),
   recordSyncRun: () => Promise.resolve(),
 }));
 

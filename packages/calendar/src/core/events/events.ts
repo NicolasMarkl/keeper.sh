@@ -47,8 +47,7 @@ type DestinationSyncRule = CompiledSyncRule;
 type RulesBySourceCalendarId = ReadonlyMap<string, DestinationSyncRule[]>;
 
 interface DestinationEventReadOptions {
-  destinationCalendarId?: string;
-  rulesBySourceCalendarId?: RulesBySourceCalendarId;
+  destinationCalendarId: string;
 }
 
 interface DestinationEventReadResult {
@@ -329,20 +328,6 @@ const recordCopies = (
   }
 };
 
-const resolveRulesBySourceCalendarId = (
-  database: BunSQLClient,
-  calendarIds: string[],
-  options: DestinationEventReadOptions,
-): Promise<RulesBySourceCalendarId> => {
-  if (options.rulesBySourceCalendarId) {
-    return Promise.resolve(options.rulesBySourceCalendarId);
-  }
-  if (options.destinationCalendarId) {
-    return getSyncRulesForDestination(database, options.destinationCalendarId, calendarIds);
-  }
-  return Promise.resolve(new Map());
-};
-
 const getMappedSourceCalendarIds = async (
   database: BunSQLClient,
   destinationCalendarId: string,
@@ -355,11 +340,203 @@ const getMappedSourceCalendarIds = async (
   return mappings.map((mapping) => mapping.sourceCalendarId);
 };
 
+interface DestinationEventRow extends SyncableEventProjectionRow {
+  calendarId: string;
+  calendarUrl: string | null;
+  endTime: Date;
+  exceptionDates: string | null;
+  id: string;
+  recurrenceId: Date | null;
+  recurrenceRule: string | null;
+  sourceEventUid: string | null;
+  startTime: Date;
+  startTimeZone: string | null;
+}
+
+interface SyncableEventContent {
+  description?: string;
+  isPrivate?: true;
+  location?: string;
+  summary: string;
+}
+
+const toSyncableEvent = (
+  row: DestinationEventRow & { sourceEventUid: string },
+  recurrence: ReturnType<typeof parseStoredRecurrenceForMaterialization>,
+  content: SyncableEventContent,
+): SyncableEvent => ({
+  calendarId: row.calendarId,
+  calendarName: row.calendarName,
+  calendarUrl: row.calendarUrl,
+  availability: parseAvailability(row.availability),
+  description: content.description,
+  endTime: row.endTime,
+  eventStateId: row.id,
+  id: row.id,
+  isAllDay: orAbsentBoolean(row.isAllDay),
+  isPrivate: content.isPrivate,
+  location: content.location,
+  ...recurrence,
+  sourceEventUid: row.sourceEventUid,
+  startTime: row.startTime,
+  startTimeZone: orAbsent(row.startTimeZone),
+  summary: content.summary,
+});
+
+interface SkippedSourceEvent {
+  calendarId: string;
+  rule: DestinationSyncRule | undefined;
+}
+
+const ignoreOverBudgetSeries = (): null => null;
+
+// Skips are counted in the same units as copies: occurrences inside the window, with the copied edits still holding their slots.
+const recordSkippedOccurrences = (
+  outcomes: Record<string, SourceProjectionOutcome>,
+  skippedEvents: SyncableEvent[],
+  skippedById: ReadonlyMap<string, SkippedSourceEvent>,
+  copiedInstances: readonly SyncableEvent[],
+  syncWindow: SyncWindow,
+): void => {
+  if (skippedEvents.length === 0) {
+    return;
+  }
+  const occurrences = materializeRecurrenceEvents([...skippedEvents, ...copiedInstances], {
+    end: syncWindow.timeMax,
+    start: syncWindow.timeMin,
+  }, { onSeriesOverBudget: ignoreOverBudgetSeries });
+  for (const occurrence of occurrences) {
+    const skipped = skippedById.get(occurrence.eventStateId ?? occurrence.id);
+    if (skipped) {
+      recordSkip(outcomes, skipped.calendarId, skipped.rule);
+    }
+  }
+};
+
+const projectDestinationEvents = (
+  rows: readonly DestinationEventRow[],
+  rulesBySourceCalendarId: RulesBySourceCalendarId,
+  syncWindow: SyncWindow,
+): DestinationEventReadResult => {
+  const syncableEvents: SyncableEvent[] = [];
+  const skippedEvents: SyncableEvent[] = [];
+  const skippedById = new Map<string, SkippedSourceEvent>();
+  const copiedInstances: SyncableEvent[] = [];
+  let excludedBySyncPolicyCount = 0;
+  let missingSourceEventUidCount = 0;
+  let outsideReconciliationWindowCount = 0;
+  let skippedByRuleCount = 0;
+  let unmatchedByRuleCount = 0;
+  const sourceOutcomes: Record<string, SourceProjectionOutcome> = {};
+  const withdrawnInstances: WithdrawnInstance[] = [];
+
+  for (const row of rows) {
+    const { sourceEventUid } = row;
+    if (sourceEventUid === null) {
+      missingSourceEventUidCount += 1;
+      continue;
+    }
+    const sourceRules = rulesBySourceCalendarId.get(row.calendarId) ?? [];
+    const projection = projectSyncableEvent(row, sourceRules);
+    if (projection.outcome !== "copy" && row.recurrenceId) {
+      withdrawnInstances.push({ calendarId: row.calendarId, recurrenceId: row.recurrenceId, sourceEventUid });
+    }
+    if (projection.outcome === "working_location") {
+      excludedBySyncPolicyCount += 1;
+      continue;
+    }
+    if (projection.outcome === "unmatched") {
+      unmatchedByRuleCount += 1;
+      continue;
+    }
+
+    const recurrence = parseStoredRecurrenceForMaterialization({
+      eventId: row.id,
+      exceptionDates: row.exceptionDates,
+      recurrenceId: row.recurrenceId,
+      recurrenceRule: row.recurrenceRule,
+    });
+
+    if (
+      !isEventInDestinationReconciliationWindow(row, syncWindow.timeMin)
+      && !recurrence.recurrenceId
+      && !recurrence.recurrenceRule
+    ) {
+      outsideReconciliationWindowCount += 1;
+      continue;
+    }
+
+    const sourceRow = { ...row, sourceEventUid };
+    if (projection.outcome === "skipped") {
+      skippedByRuleCount += 1;
+      skippedEvents.push(toSyncableEvent(sourceRow, recurrence, { summary: "" }));
+      skippedById.set(row.id, {
+        calendarId: row.calendarId,
+        rule: sourceRules.find((rule) => rule.id === projection.ruleId),
+      });
+      continue;
+    }
+
+    const event = toSyncableEvent(sourceRow, recurrence, projection);
+    if (event.recurrenceId) {
+      copiedInstances.push(event);
+    }
+    syncableEvents.push(event);
+  }
+
+  /*
+   * A series can exceed the occurrence budget for a window the user just widened.
+   * Skipping it keeps the destination syncing; failing here would back off the whole
+   * calendar over one series, and ingestion already withholds these from new writes.
+   */
+  const overBudgetSourceEventStateIds: string[] = [];
+  const overBudgetSourceEventUids: string[] = [];
+  const events = materializeRecurrenceEvents(excludeWithdrawnInstances(syncableEvents, withdrawnInstances), {
+    end: syncWindow.timeMax,
+    start: syncWindow.timeMin,
+  }, {
+    onSeriesOverBudget: (error) => {
+      overBudgetSourceEventUids.push(error.sourceEventUid);
+      overBudgetSourceEventStateIds.push(error.eventStateId ?? error.eventId);
+    },
+  });
+
+  recordCopies(sourceOutcomes, events);
+  recordSkippedOccurrences(
+    sourceOutcomes,
+    excludeWithdrawnInstances(skippedEvents, withdrawnInstances),
+    skippedById,
+    copiedInstances,
+    syncWindow,
+  );
+  const emptyTimeRangeCount = events.filter((event) => isEmptyTimeRange(event)).length;
+  const invertedTimeRangeCount = events.filter((event) => isInvertedTimeRange(event)).length;
+
+  return {
+    diagnostics: {
+      candidateEventStateCount: rows.length,
+      emptyTimeRangeCount,
+      excludedBySyncPolicyCount,
+      invertedTimeRangeCount,
+      materializedEventCount: events.length,
+      missingSourceEventUidCount,
+      outsideReconciliationWindowCount,
+      overBudgetSourceEventStateIds,
+      overBudgetSourceEventUids,
+      skippedByRuleCount,
+      sourceOutcomes,
+      syncableEventCount: syncableEvents.length,
+      unmatchedByRuleCount,
+    },
+    events,
+  };
+};
+
 const getEventsForCalendarsWithDiagnostics = async (
   database: BunSQLClient,
   calendarIds: string[],
   syncWindow: SyncWindow,
-  options: DestinationEventReadOptions = {},
+  options: DestinationEventReadOptions,
 ): Promise<DestinationEventReadResult> => {
   if (calendarIds.length === EMPTY_SOURCES_COUNT) {
     return {
@@ -368,8 +545,12 @@ const getEventsForCalendarsWithDiagnostics = async (
     };
   }
 
-  const rulesBySourceCalendarId = await resolveRulesBySourceCalendarId(database, calendarIds, options);
-  const results = await database
+  const rulesBySourceCalendarId = await getSyncRulesForDestination(
+    database,
+    options.destinationCalendarId,
+    calendarIds,
+  );
+  const rows = await database
     .select({
       calendarId: eventStatesTable.calendarId,
       calendarName: calendarsTable.name,
@@ -405,144 +586,17 @@ const getEventsForCalendarsWithDiagnostics = async (
     )
     .orderBy(asc(eventStatesTable.startTime));
 
-  const syncableEvents: SyncableEvent[] = [];
-  let excludedBySyncPolicyCount = 0;
-  let missingSourceEventUidCount = 0;
-  let outsideReconciliationWindowCount = 0;
-  let skippedByRuleCount = 0;
-  let unmatchedByRuleCount = 0;
-  const sourceOutcomes: Record<string, SourceProjectionOutcome> = {};
-  const withdrawnInstances: WithdrawnInstance[] = [];
-
-  for (const result of results) {
-    if (result.sourceEventUid === null) {
-      missingSourceEventUidCount += 1;
-      continue;
-    }
-    const sourceRules = rulesBySourceCalendarId.get(result.calendarId) ?? [];
-    const projection = projectSyncableEvent(result, sourceRules);
-    if (projection.outcome !== "copy" && result.recurrenceId) {
-      withdrawnInstances.push({ calendarId: result.calendarId, recurrenceId: result.recurrenceId, sourceEventUid: result.sourceEventUid });
-    }
-    if (projection.outcome === "working_location") {
-      excludedBySyncPolicyCount += 1;
-      continue;
-    }
-    if (projection.outcome === "unmatched") {
-      unmatchedByRuleCount += 1;
-      continue;
-    }
-    if (projection.outcome === "skipped") {
-      skippedByRuleCount += 1;
-      recordSkip(sourceOutcomes, result.calendarId, sourceRules.find((rule) => rule.id === projection.ruleId));
-      continue;
-    }
-
-    const recurrence = parseStoredRecurrenceForMaterialization({
-      eventId: result.id,
-      exceptionDates: result.exceptionDates,
-      recurrenceId: result.recurrenceId,
-      recurrenceRule: result.recurrenceRule,
-    });
-
-    if (
-      !isEventInDestinationReconciliationWindow(result, syncWindow.timeMin)
-      && !recurrence.recurrenceId
-      && !recurrence.recurrenceRule
-    ) {
-      outsideReconciliationWindowCount += 1;
-      continue;
-    }
-
-    syncableEvents.push({
-      calendarId: result.calendarId,
-      calendarName: result.calendarName,
-      calendarUrl: result.calendarUrl,
-      availability: parseAvailability(result.availability),
-      description: projection.description,
-      endTime: result.endTime,
-      eventStateId: result.id,
-      id: result.id,
-      isAllDay: orAbsentBoolean(result.isAllDay),
-      isPrivate: projection.isPrivate,
-      location: projection.location,
-      ...recurrence,
-      sourceEventUid: result.sourceEventUid,
-      startTime: result.startTime,
-      startTimeZone: orAbsent(result.startTimeZone),
-      summary: projection.summary,
-    });
-  }
-
-  /*
-   * A series can exceed the occurrence budget for a window the user just widened.
-   * Skipping it keeps the destination syncing; failing here would back off the whole
-   * calendar over one series, and ingestion already withholds these from new writes.
-   */
-  const overBudgetSourceEventStateIds: string[] = [];
-  const overBudgetSourceEventUids: string[] = [];
-  const events = materializeRecurrenceEvents(excludeWithdrawnInstances(syncableEvents, withdrawnInstances), {
-    end: syncWindow.timeMax,
-    start: syncWindow.timeMin,
-  }, {
-    onSeriesOverBudget: (error) => {
-      overBudgetSourceEventUids.push(error.sourceEventUid);
-      overBudgetSourceEventStateIds.push(error.eventStateId ?? error.eventId);
-    },
-  });
-
-  recordCopies(sourceOutcomes, events);
-  const emptyTimeRangeCount = events.filter((event) => isEmptyTimeRange(event)).length;
-  const invertedTimeRangeCount = events.filter((event) => isInvertedTimeRange(event)).length;
-
-  return {
-    diagnostics: {
-      candidateEventStateCount: results.length,
-      emptyTimeRangeCount,
-      excludedBySyncPolicyCount,
-      invertedTimeRangeCount,
-      materializedEventCount: events.length,
-      missingSourceEventUidCount,
-      outsideReconciliationWindowCount,
-      overBudgetSourceEventStateIds,
-      overBudgetSourceEventUids,
-      skippedByRuleCount,
-      sourceOutcomes,
-      syncableEventCount: syncableEvents.length,
-      unmatchedByRuleCount,
-    },
-    events,
-  };
-};
-
-const getEventsForDestination = async (
-  database: BunSQLClient,
-  destinationCalendarId: string,
-  syncWindow: SyncWindow,
-): Promise<MaterializedSyncableEvent[]> => {
-  const sourceCalendarIds = await getMappedSourceCalendarIds(database, destinationCalendarId);
-
-  if (sourceCalendarIds.length === EMPTY_SOURCES_COUNT) {
-    return [];
-  }
-
-  const result = await getEventsForCalendarsWithDiagnostics(
-    database,
-    sourceCalendarIds,
-    syncWindow,
-    { destinationCalendarId },
-  );
-  return result.events;
+  return projectDestinationEvents(rows, rulesBySourceCalendarId, syncWindow);
 };
 
 export {
   excludeWithdrawnInstances,
   getEventsForCalendarsWithDiagnostics,
-  getEventsForDestination,
   getMappedSourceCalendarIds,
   getPausedSourceCalendarIds,
   getSyncRulesForDestination,
   isEventInDestinationReconciliationWindow,
+  projectDestinationEvents,
   projectSyncableEvent,
   shouldExcludeSyncEvent,
 };
@@ -550,8 +604,8 @@ export type {
   DestinationEventReadDiagnostics,
   DestinationEventReadOptions,
   DestinationEventReadResult,
+  DestinationEventRow,
   DestinationSyncRule,
-  RulesBySourceCalendarId,
   SourceProjectionOutcome,
   SyncableEventProjection,
 };
