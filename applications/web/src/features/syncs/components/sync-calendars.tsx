@@ -1,12 +1,12 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
+import { MAX_BOTH_WAYS_MEMBERS, MAX_SYNC_CALENDARS, deriveSyncPairs } from "@keeper.sh/data-schemas";
 import type { SyncCalendarRole, SyncCalendars, SyncMode } from "@keeper.sh/data-schemas";
 import { SegmentedControl } from "@/components/ui/primitives/segmented-control";
 import { Text } from "@/components/ui/primitives/text";
 import type { CalendarSource } from "@/types/api";
 import { cn } from "@/utils/cn";
-import { deriveSyncPairs } from "@keeper.sh/data-schemas";
-import { calendarsInRole, switchMode, toggleCalendar } from "../sync-draft";
-import { CalendarOptions } from "./calendar-options";
+import { calendarsInRole, roleCapacity, switchMode, toggleCalendar } from "../sync-draft";
+import { CalendarOptions, type CalendarCapacity } from "./calendar-options";
 import { SentencePanel } from "./sentence-panel";
 import { SyncSentence } from "./sync-sentence";
 
@@ -14,6 +14,9 @@ interface SyncCalendarsProps {
   value: SyncCalendars;
   calendars: CalendarSource[];
   calendarsById: ReadonlyMap<string, CalendarSource>;
+  // The plan's per-end cap, and the saved lists that may keep their length past it.
+  calendarLimit: number | null;
+  saved: SyncCalendars | null;
   onChange: (calendars: SyncCalendars) => void;
   onConnect?: (role: SyncCalendarRole) => void;
   // Inside the lifted block so it stays sharp over the overlay and answers each pick as it's made.
@@ -27,10 +30,19 @@ const MODE_OPTIONS: { label: string; value: SyncMode }[] = [
 
 const OTHER_END: Partial<Record<SyncCalendarRole, SyncCalendarRole>> = { destination: "source", source: "destination" };
 
-export function SyncCalendars({ value, calendars, calendarsById, onChange, onConnect, notice }: SyncCalendarsProps) {
+const capacityFor = (role: SyncCalendarRole, mode: SyncMode, saved: SyncCalendars | null, calendarLimit: number | null): CalendarCapacity => {
+  const max = roleCapacity(role, mode, saved, calendarLimit);
+  return { byPlan: max < (role === "member" ? MAX_BOTH_WAYS_MEMBERS : MAX_SYNC_CALENDARS), max };
+};
+
+export function SyncCalendars({ value, calendars, calendarsById, calendarLimit, saved, onChange, onConnect, notice }: SyncCalendarsProps) {
   const [openRole, setOpenRole] = useState<SyncCalendarRole | null>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
-  const close = useCallback(() => setOpenRole(null), []);
+  const close = useCallback((restoreFocus = false) => {
+    const opener = restoreFocus ? anchorRef.current?.querySelector<HTMLElement>("[aria-expanded='true']") : null;
+    setOpenRole(null);
+    opener?.focus();
+  }, []);
   const pairCount = deriveSyncPairs(value).length;
   const otherEnd = openRole ? OTHER_END[openRole] : undefined;
 
@@ -60,6 +72,7 @@ export function SyncCalendars({ value, calendars, calendarsById, onChange, onCon
             calendars={calendars}
             selectedIds={calendarsInRole(value, openRole)}
             otherEndIds={otherEnd ? calendarsInRole(value, otherEnd) : []}
+            capacity={capacityFor(openRole, value.mode, saved, calendarLimit)}
             onToggle={(calendarId) => onChange(toggleCalendar(value, openRole, calendarId))}
             onConnect={onConnect ? () => onConnect(openRole) : undefined}
           />

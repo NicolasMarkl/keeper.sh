@@ -22,16 +22,19 @@ const TEMPLATE_ICONS: Record<SyncTemplateKey, typeof Users> = {
 
 interface ProfileGalleryProps {
   disabled?: boolean;
+  // On a free plan each Pro profile still fills in what it can, and says what Pro would add.
+  locked?: boolean;
   onPick: (template: SyncTemplateKey | null) => void;
 }
 
-export function ProfileGallery({ disabled, onPick }: ProfileGalleryProps) {
+export function ProfileGallery({ disabled, locked = false, onPick }: ProfileGalleryProps) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="grid grid-cols-1 gap-1.5 xs:grid-cols-2">
         {SYNC_TEMPLATE_ORDER.map((key) => {
           const template = SYNC_TEMPLATES[key];
           const Icon = TEMPLATE_ICONS[key];
+          const pro = locked && template.requiresPro;
           return (
             <button
               key={key}
@@ -43,9 +46,12 @@ export function ProfileGallery({ disabled, onPick }: ProfileGalleryProps) {
               <span className="flex items-center gap-2 text-sm font-medium tracking-tight text-foreground">
                 <Icon size={16} />
                 {template.name}
+                {pro && <Text as="span" size="xs" tone="muted" className="ml-auto rounded-md border border-interactive-border px-1.5">Pro</Text>}
               </span>
               <Text size="sm" tone="muted">{template.description}</Text>
-              <Text size="xs" tone="muted" className="mt-auto border-t border-dashed border-interactive-border pt-1.5">{template.spec}</Text>
+              <Text size="xs" tone="muted" className="mt-auto border-t border-dashed border-interactive-border pt-1.5">
+                {pro ? template.lockedSpec : template.spec}
+              </Text>
             </button>
           );
         })}

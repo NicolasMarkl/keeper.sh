@@ -13,6 +13,12 @@ interface SyncSentenceProps {
   onOpen: (role: SyncCalendarRole) => void;
 }
 
+const ADD_LABELS: Record<SyncCalendarRole, string> = {
+  destination: "Add a calendar to copy to",
+  member: "Add a calendar to this sync",
+  source: "Add a calendar to copy from",
+};
+
 const EMPTY_LABELS: Record<SyncCalendarRole, string> = {
   destination: "another calendar",
   member: "two or more calendars",
@@ -45,7 +51,7 @@ export function SyncSentence({ calendars, calendarsById, openRole, onOpen }: Syn
           );
         })}
         {" "}
-        <SentenceBlank filled={false} open={open} ariaLabel="Add a calendar" onClick={() => onOpen(role)} />
+        <SentenceBlank filled={false} open={open} ariaLabel={ADD_LABELS[role]} onClick={() => onOpen(role)} />
       </>
     );
   };

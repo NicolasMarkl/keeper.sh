@@ -1,5 +1,14 @@
-import type { SyncActivityEntry, SyncActivitySummary, SyncChange, SyncRunRecord } from "@keeper.sh/data-schemas";
+import type {
+  SyncActivityEntry,
+  SyncActivitySummary,
+  SyncCalendarProblem,
+  SyncChange,
+  SyncDetail,
+  SyncRunRecord,
+} from "@keeper.sh/data-schemas";
 import { pluralize } from "@/lib/pluralize";
+import type { CalendarSource } from "@/types/api";
+import { calendarName } from "./syncs";
 
 export type ActivityKind = "all" | "runs" | "changes";
 
@@ -93,7 +102,12 @@ export const describeActivitySummary = (
   summary: SyncActivitySummary,
   calendarNames: readonly string[],
   waitingOn: readonly string[],
+  paused = false,
 ): ActivitySentence => {
+  // A paused sync records nothing, so the window's totals and skips would describe the time before it.
+  if (paused) {
+    return { detail: "Copies already made stay as they are.", headline: "New events wait until you resume.", period: "Paused." };
+  }
   const moved = [
     summary.added > 0 && `copied ${pluralize(summary.added, "event")}`,
     summary.removed > 0 && `removed ${pluralize(summary.removed, "copy", "copies")}`,
@@ -106,4 +120,31 @@ export const describeActivitySummary = (
   const waiting = waitingOn.length > 0 ? `${listNames(waitingOn)} ${waitingOn.length === 1 ? "is" : "are"} waiting on a reconnect.` : "";
 
   return { detail: [skipping, waiting].filter(Boolean).join(" "), headline, period: "In the last 7 days," };
+};
+
+export interface CalendarIssue {
+  calendarId: string;
+  name: string;
+  problem: SyncCalendarProblem;
+  // Reconnecting only helps an account that lost authorization; any other failure is looked into on the calendar's page.
+  to: string | null;
+}
+
+// One row per calendar, whichever end it sits on, so a both-ways member with a problem isn't listed twice.
+export const calendarIssues = (sync: Pick<SyncDetail, "destinations" | "sources">, calendarsById: ReadonlyMap<string, CalendarSource>): CalendarIssue[] => {
+  const issues = new Map<string, CalendarIssue>();
+  for (const status of [...(sync.sources ?? []), ...sync.destinations]) {
+    if (!status.problem || issues.has(status.calendarId)) continue;
+    const accountId = calendarsById.get(status.calendarId)?.accountId;
+    let to: string | null = null;
+    if (accountId && status.problem === "reauth") to = `/dashboard/accounts/${accountId}/reconnect`;
+    if (accountId && status.problem === "failing") to = `/dashboard/accounts/${accountId}/${status.calendarId}`;
+    issues.set(status.calendarId, {
+      calendarId: status.calendarId,
+      name: calendarName(calendarsById, status.calendarId),
+      problem: status.problem,
+      to,
+    });
+  }
+  return [...issues.values()];
 };

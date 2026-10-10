@@ -6,12 +6,13 @@ import { RuleRow } from "./rule-row";
 
 interface ConditionRowProps {
   condition: RuleCondition;
+  disabled?: boolean;
   onChange: (condition: RuleCondition) => void;
   onRemove: () => void;
 }
 
-export function ConditionRow({ condition, onChange, onRemove }: ConditionRowProps) {
-  const remove = <RowRemoveButton label={`Remove ${CONDITION_LABELS[condition.kind]}`} onClick={onRemove} />;
+export function ConditionRow({ condition, disabled, onChange, onRemove }: ConditionRowProps) {
+  const remove = !disabled && <RowRemoveButton label={`Remove ${CONDITION_LABELS[condition.kind]}`} onClick={onRemove} />;
 
   if (condition.kind === "title_contains") {
     return (
@@ -19,6 +20,7 @@ export function ConditionRow({ condition, onChange, onRemove }: ConditionRowProp
         label={CONDITION_LABELS.title_contains}
         value={condition.value}
         defaultEditing={condition.value === ""}
+        disabled={disabled}
         trailing={remove}
         onCancel={() => { if (condition.value === "") onRemove(); }}
         onCommit={(value) => onChange({ kind: "title_contains", value })}

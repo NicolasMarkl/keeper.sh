@@ -8,12 +8,15 @@ import { RuleRow } from "./rule-row";
 
 interface ActionRowProps {
   action: RuleAction;
+  // The variables a Rename To may use; Busy Only leaves out the event's own name.
+  variables?: Record<string, string>;
+  disabled?: boolean;
   onChange: (action: RuleAction) => void;
   onRemove: () => void;
 }
 
-export function ActionRow({ action, onChange, onRemove }: ActionRowProps) {
-  const remove = <RowRemoveButton label={`Remove ${ACTION_LABELS[action.kind]}`} onClick={onRemove} />;
+export function ActionRow({ action, variables = TEMPLATE_VARIABLES, disabled, onChange, onRemove }: ActionRowProps) {
+  const remove = !disabled && <RowRemoveButton label={`Remove ${ACTION_LABELS[action.kind]}`} onClick={onRemove} />;
 
   if (action.kind === "rename") {
     return (
@@ -21,13 +24,14 @@ export function ActionRow({ action, onChange, onRemove }: ActionRowProps) {
         label={ACTION_LABELS.rename}
         value={action.template}
         defaultEditing={action.template === ""}
+        disabled={disabled}
         trailing={remove}
-        renderInput={(live) => <TemplateText template={live} variables={TEMPLATE_VARIABLES} />}
+        renderInput={(live) => <TemplateText template={live} variables={variables} />}
         onCancel={() => { if (action.template === "") onRemove(); }}
         onCommit={(template) => onChange({ kind: "rename", template })}
       >
         <Text size="sm" tone="muted" className="min-w-0 flex-1 truncate text-right">
-          <TemplateText template={action.template} variables={TEMPLATE_VARIABLES} />
+          <TemplateText template={action.template} variables={variables} />
         </Text>
       </NavigationMenuEditableTemplateItem>
     );

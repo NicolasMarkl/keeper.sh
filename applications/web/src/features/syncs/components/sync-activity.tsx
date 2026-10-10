@@ -5,9 +5,12 @@ import Check from "lucide-react/dist/esm/icons/check";
 import Funnel from "lucide-react/dist/esm/icons/funnel";
 import Pencil from "lucide-react/dist/esm/icons/pencil";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
+import LoaderCircle from "lucide-react/dist/esm/icons/loader-circle";
 import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import X from "lucide-react/dist/esm/icons/x";
-import type { SyncActivitySummary, SyncDetail, SyncRunRecord } from "@keeper.sh/data-schemas";
+import { useSWRConfig } from "swr";
+import type { SyncActivitySummary, SyncCalendarProblem, SyncDetail, SyncRunRecord } from "@keeper.sh/data-schemas";
+import { ErrorState } from "@/components/ui/primitives/error-state";
 import { ProviderIcon } from "@/components/ui/primitives/provider-icon";
 import { SegmentedControl } from "@/components/ui/primitives/segmented-control";
 import { Text } from "@/components/ui/primitives/text";
@@ -23,8 +26,10 @@ import {
 import { NavigationMenuPopover } from "@/components/ui/composites/navigation-menu/navigation-menu-popover";
 import { usePopover } from "@/components/ui/composites/navigation-menu/navigation-menu.contexts";
 import { loadMotionFeatures } from "@/lib/motion-features";
+import { invalidateAccountsAndSources } from "@/lib/swr";
 import type { CalendarSource } from "@/types/api";
 import { cn } from "@/utils/cn";
+import { resolveErrorMessage } from "@/utils/errors";
 import {
   describeActivitySummary,
   formatActivityClock,
@@ -34,8 +39,9 @@ import {
   type ActivityFilter,
   type ActivityKind,
 } from "../sync-activity";
-import { calendarName, describeChange } from "../syncs";
-import { useSyncActivity } from "../use-syncs";
+import { SYNCS_KEY, calendarName, describeChange } from "../syncs";
+import { setCalendarPaused, useSyncActivity } from "../use-syncs";
+import { calendarIssues, type CalendarIssue } from "../sync-activity";
 
 const KIND_OPTIONS: { label: string; value: ActivityKind }[] = [
   { label: "Everything", value: "all" },
@@ -45,7 +51,11 @@ const KIND_OPTIONS: { label: string; value: ActivityKind }[] = [
 
 const REASON_COLORS = ["bg-emerald-400", "bg-blue-400", "bg-violet-400", "bg-pink-400", "bg-amber-400"];
 
-const PROBLEM_TEXT = { disabled: "is turned off", failing: "keeps failing, retrying", reauth: "needs reconnecting" } as const;
+const PROBLEM_TEXT: Record<SyncCalendarProblem, string> = {
+  disabled: "is paused",
+  failing: "keeps failing, retrying",
+  reauth: "needs reconnecting",
+};
 
 type SourcesById = ReadonlyMap<string, CalendarSource>;
 
@@ -56,36 +66,26 @@ interface SyncActivityProps {
 
 export function SyncActivity({ sync, calendars }: SyncActivityProps) {
   const calendarsById: SourcesById = new Map(calendars.map((calendar) => [calendar.id, calendar] as const));
-  const { data, entries, hasMore, isValidating, setSize, size, summary } = useSyncActivity(sync.id);
+  const { data, entries, error, hasMore, isValidating, mutate, setSize, size, summary } = useSyncActivity(sync.id);
   const [filter, setFilter] = useState<ActivityFilter>({ calendarId: null, kind: "all" });
 
   const destinationIds = sync.destinations.map((destination) => destination.calendarId);
-  const problems = sync.destinations.filter((destination) => destination.problem !== null);
-  const waitingOn = problems
-    .filter((destination) => destination.problem === "reauth")
-    .map((destination) => calendarName(calendarsById, destination.calendarId));
+  const issues = calendarIssues(sync, calendarsById);
+  const waitingOn = issues.filter((issue) => issue.problem === "reauth").map((issue) => issue.name);
   const days = groupActivity(entries, filter);
   const pickCalendar = (calendarId: string | null) => setFilter((current) => ({ ...current, calendarId }));
   const pickFromLog = destinationIds.length > 1 ? pickCalendar : undefined;
+  const loadingOlder = isValidating && size > 1;
 
   return (
     <>
-      {(problems.length > 0 || summary) && (
+      {(issues.length > 0 || summary) && (
         <div className="flex flex-col gap-4 pt-1.5">
-          {problems.length > 0 && (
-            <NavigationMenu variant="attention">
-              {reconnectRows(problems, calendarsById).map((row) => (
-                <NavigationMenuLinkItem key={row.key} to={row.to}>
-                  <NavigationMenuItemIcon><TriangleAlert size={15} /></NavigationMenuItemIcon>
-                  <NavigationMenuItemLabel>{row.label}</NavigationMenuItemLabel>
-                  {row.to && <NavigationMenuItemTrailing><Text size="sm" tone="attention" className="hidden sm:block">Reconnect</Text></NavigationMenuItemTrailing>}
-                </NavigationMenuLinkItem>
-              ))}
-            </NavigationMenu>
-          )}
+          {issues.length > 0 && <CalendarIssueList issues={issues} />}
           {summary && (
             <ActivityDigest
-              summary={{ ...summary, skipped: sync.skippedCount }}
+              summary={summary}
+              paused={sync.paused}
               calendarNames={destinationIds.map((calendarId) => calendarName(calendarsById, calendarId))}
               waitingOn={waitingOn}
             />
@@ -106,13 +106,19 @@ export function SyncActivity({ sync, calendars }: SyncActivityProps) {
           <CalendarFilterMenu
             calendarIds={destinationIds}
             calendarsById={calendarsById}
-            problems={new Set(problems.map((destination) => destination.calendarId))}
+            problems={new Set(sync.destinations.filter((destination) => destination.problem !== null).map((destination) => destination.calendarId))}
             value={filter.calendarId}
             disabled={filter.kind === "changes"}
             onChange={pickCalendar}
           />
         )}
       </div>
+      {!data && !error && (
+        <div role="status" aria-label="Loading activity" className="flex justify-center py-8">
+          <LoaderCircle size={20} className="animate-spin text-foreground-muted motion-reduce:animate-none" />
+        </div>
+      )}
+      {!data && error && <ErrorState message="Couldn't load this sync's activity." onRetry={() => { void mutate(); }} />}
       {data && entries.length === 0 && !hasMore && (
         <NavigationMenu>
           <NavigationMenuEmptyItem>Changes and sync runs show up here</NavigationMenuEmptyItem>
@@ -125,10 +131,11 @@ export function SyncActivity({ sync, calendars }: SyncActivityProps) {
       )}
       {days.map((day) => <ActivityDaySection key={day.key} day={day} calendarsById={calendarsById} onPickCalendar={pickFromLog} />)}
       {hasMore && (
-        <div className="pt-3">
+        <div className="flex flex-col gap-1.5 pt-3">
+          {data && error && !loadingOlder && <Text size="sm" tone="danger" className="px-0.5">Couldn't load older activity. Try again.</Text>}
           <NavigationMenu>
-            <NavigationMenuButtonItem disabled={isValidating && size > 1} onClick={() => { void setSize(size + 1); }}>
-              <NavigationMenuItemLabel>{isValidating && size > 1 ? "Loading…" : "Show Older"}</NavigationMenuItemLabel>
+            <NavigationMenuButtonItem disabled={loadingOlder} onClick={() => { void setSize(size + 1); }}>
+              <NavigationMenuItemLabel>{loadingOlder ? "Loading…" : "Show Older"}</NavigationMenuItemLabel>
             </NavigationMenuButtonItem>
           </NavigationMenu>
         </div>
@@ -137,29 +144,72 @@ export function SyncActivity({ sync, calendars }: SyncActivityProps) {
   );
 }
 
-interface ProblemRow {
-  key: string;
-  label: string;
-  to?: string;
+const ISSUE_ACTION: Record<SyncCalendarProblem, string> = { disabled: "Resume", failing: "Open Calendar", reauth: "Reconnect" };
+
+function CalendarIssueList({ issues }: { issues: CalendarIssue[] }) {
+  const { mutate } = useSWRConfig();
+  const [resuming, setResuming] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+
+  const resume = async (calendarId: string) => {
+    setResuming(calendarId);
+    setResumeError(null);
+    try {
+      await setCalendarPaused(calendarId, false);
+      await Promise.all([
+        invalidateAccountsAndSources(mutate),
+        mutate((key) => typeof key === "string" && key.startsWith(SYNCS_KEY)),
+      ]);
+    } catch (resumeFailure) {
+      setResumeError(resolveErrorMessage(resumeFailure, "Couldn't resume this calendar."));
+    } finally {
+      setResuming(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <NavigationMenu variant="attention">
+        {issues.map((issue) => {
+          const label = `${issue.name} ${PROBLEM_TEXT[issue.problem]}`;
+          const icon = <NavigationMenuItemIcon><TriangleAlert size={15} /></NavigationMenuItemIcon>;
+          if (issue.problem === "disabled") {
+            return (
+              <NavigationMenuButtonItem key={issue.calendarId} disabled={resuming !== null} onClick={() => { void resume(issue.calendarId); }}>
+                {icon}
+                <NavigationMenuItemLabel>{label}</NavigationMenuItemLabel>
+                <NavigationMenuItemTrailing indicator={null}>
+                  <Text size="sm" tone="attention">{resuming === issue.calendarId ? "Resuming…" : ISSUE_ACTION.disabled}</Text>
+                </NavigationMenuItemTrailing>
+              </NavigationMenuButtonItem>
+            );
+          }
+          return (
+            <NavigationMenuLinkItem key={issue.calendarId} to={issue.to ?? undefined}>
+              {icon}
+              <NavigationMenuItemLabel>{label}</NavigationMenuItemLabel>
+              {issue.to && <NavigationMenuItemTrailing><Text size="sm" tone="attention" className="hidden sm:block">{ISSUE_ACTION[issue.problem]}</Text></NavigationMenuItemTrailing>}
+            </NavigationMenuLinkItem>
+          );
+        })}
+      </NavigationMenu>
+      {resumeError && <Text size="sm" tone="danger" className="px-0.5">{resumeError}</Text>}
+    </div>
+  );
 }
 
-// One row per calendar, each leading to its account's reconnect page, which is also how a failing calendar recovers;
-// a turned-off calendar was paused, which reconnecting can't undo.
-const reconnectRows = (problems: SyncDetail["destinations"], calendarsById: SourcesById): ProblemRow[] =>
-  problems.flatMap((destination) => {
-    if (!destination.problem) return [];
-    const accountId = calendarsById.get(destination.calendarId)?.accountId;
-    return [{
-      key: destination.calendarId,
-      label: `${calendarName(calendarsById, destination.calendarId)} ${PROBLEM_TEXT[destination.problem]}`,
-      to: accountId && destination.problem !== "disabled" ? `/dashboard/accounts/${accountId}/reconnect` : undefined,
-    }];
-  });
+interface ActivityDigestProps {
+  summary: SyncActivitySummary;
+  paused: boolean;
+  calendarNames: string[];
+  waitingOn: string[];
+}
 
-function ActivityDigest({ summary, calendarNames, waitingOn }: { summary: SyncActivitySummary; calendarNames: string[]; waitingOn: string[] }) {
-  const sentence = describeActivitySummary(summary, calendarNames, waitingOn);
+function ActivityDigest({ summary, paused, calendarNames, waitingOn }: ActivityDigestProps) {
+  const sentence = describeActivitySummary(summary, calendarNames, waitingOn, paused);
   const named = summary.skippedBy.reduce((total, reason) => total + reason.count, 0);
-  const reasons = [
+  // The skip numbers stop moving while paused, so they'd describe the sync as it was before.
+  const reasons = paused ? [] : [
     ...summary.skippedBy.map((reason, index) => ({ className: REASON_COLORS[index % REASON_COLORS.length], count: reason.count, key: reason.ruleId, name: reason.name })),
     ...(summary.skipped > named ? [{ className: "bg-foreground-disabled", count: summary.skipped - named, key: "other", name: "Other" }] : []),
   ];
@@ -283,7 +333,6 @@ function RunRow({ run, calendarsById, onPick }: { run: SyncRunRecord; calendarsB
         </Delta>
       )}
       {quiet && <Text size="xs" tone="muted">Back to normal</Text>}
-      {run.sharedDestination && <Text size="xs" tone="muted">· shared with other syncs</Text>}
     </div>
   );
 }
@@ -413,7 +462,7 @@ function AnimatedWidth({ className, children }: PropsWithChildren<{ className?: 
 function CalendarFilterOption({ picked, onPick, children }: PropsWithChildren<{ picked: boolean; onPick: () => void }>) {
   const { closeThen } = usePopover();
   return (
-    <NavigationMenuButtonItem onClick={() => closeThen(onPick)}>
+    <NavigationMenuButtonItem selected={picked} onClick={() => closeThen(onPick)}>
       {children}
       <NavigationMenuItemTrailing indicator={picked ? <Check size={15} className="shrink-0 text-foreground" /> : null} />
     </NavigationMenuButtonItem>

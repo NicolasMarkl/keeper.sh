@@ -13,6 +13,8 @@ interface Entitlements {
   accounts: EntitlementLimit;
   feeds: EntitlementLimit;
   syncs: EntitlementLimit;
+  // How many calendars each side of a sync may hold; null means no plan limit.
+  syncCalendars: { limit: number | null };
   canCustomizeIcalFeed: boolean;
   canUseEventFilters: boolean;
   realtimeSync: boolean;
@@ -26,6 +28,7 @@ function buildOptimisticProEntitlements(): Entitlements {
     accounts: { current: 0, limit: null },
     feeds: { current: 0, limit: null },
     syncs: { current: 0, limit: null },
+    syncCalendars: { limit: null },
     canCustomizeIcalFeed: true,
     canUseEventFilters: true,
     realtimeSync: false,

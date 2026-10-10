@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { MotionConfig, useReducedMotion } from "motion/react";
 import ArrowDown from "lucide-react/dist/esm/icons/arrow-down";
 import ArrowUp from "lucide-react/dist/esm/icons/arrow-up";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
@@ -7,10 +8,11 @@ import LockIcon from "lucide-react/dist/esm/icons/lock";
 import Plus from "lucide-react/dist/esm/icons/plus";
 import SlidersHorizontal from "lucide-react/dist/esm/icons/sliders-horizontal";
 import X from "lucide-react/dist/esm/icons/x";
-import { MAX_ADVANCED_RULES, syncRuleNameSchema } from "@keeper.sh/data-schemas";
+import { MAX_ADVANCED_RULES } from "@keeper.sh/data-schemas";
 import type { AdvancedRule, RuleAction, RuleCondition, ShareAs, SyncSummary } from "@keeper.sh/data-schemas";
+import { getCommercialMode } from "@/config/commercial";
 import { AnimatedReveal, RevealGroup, RevealItem } from "@/components/ui/primitives/animated-reveal";
-import { PremiumGate } from "@/components/ui/primitives/menu-hint";
+import { MenuGate, MenuHint } from "@/components/ui/primitives/menu-hint";
 import { SegmentedControl } from "@/components/ui/primitives/segmented-control";
 import { Text } from "@/components/ui/primitives/text";
 import {
@@ -32,19 +34,24 @@ import {
   availableConditionKinds,
   createAction,
   createCondition,
+  createRuleId,
   moveItem,
   needsInput,
   normalizeActions,
   removeAt,
   replaceAt,
+  ruleProblem,
+  templateVariablesFor,
   type ActionKind,
   type ConditionKind,
 } from "../rule-editing";
+import { UPGRADE_ACTION } from "../sync-plan";
 import { shareAsLabel } from "../syncs";
 import { ActionRow } from "./action-row";
 import { AddRuleItem } from "./add-rule-item";
 import { ConditionRow } from "./condition-row";
 import { RowIconButton } from "./row-remove-button";
+import { focusLater } from "../row-focus";
 
 interface AdvancedRulesProps {
   rules: AdvancedRule[];
@@ -54,32 +61,48 @@ interface AdvancedRulesProps {
   onChange: (rules: AdvancedRule[]) => void;
 }
 
+const INSTANT = { duration: 0 };
+const FOCUSABLE = "button:not([disabled]), input";
+
 const createRule = (): AdvancedRule => ({
   actions: [],
   conditions: [],
-  id: crypto.randomUUID(),
+  id: createRuleId(),
   match: "all",
   name: "New rule",
 });
 
+const ruleCount = (count: number): string => (count === 1 ? "1 rule" : `${count} rules`);
+
+// Locked, a sync keeps its rules and can drop or reorder them, but nothing that would make a rule new can be done.
 export function AdvancedRules({ rules, shareAs, locked, otherSyncs, onChange }: AdvancedRulesProps) {
   const [open, setOpen] = useState(rules.length > 0);
+  const reduceMotion = useReducedMotion() ?? false;
+  const listRef = useRef<HTMLDivElement>(null);
+  const addRef = useRef<HTMLDivElement>(null);
   const donors = otherSyncs.filter((sync) => sync.rules.length > 0);
   const copyFrom = (sync: SyncSummary) => {
-    const copies = sync.rules.map((rule) => ({ ...rule, id: crypto.randomUUID() }));
+    const copies = sync.rules.map((rule) => ({ ...rule, id: createRuleId() }));
     onChange([...rules, ...copies].slice(0, MAX_ADVANCED_RULES));
   };
 
+  const remove = (index: number) => {
+    const cards = [...(listRef.current?.querySelectorAll("[data-rule-card]") ?? [])];
+    const neighbour = cards[index + 1] ?? cards[index - 1] ?? addRef.current;
+    onChange(removeAt(rules, index));
+    focusLater(neighbour?.querySelector<HTMLElement>(FOCUSABLE) ?? null);
+  };
+
   return (
-    <>
+    <MotionConfig transition={reduceMotion ? INSTANT : undefined}>
       <NavigationMenu>
         <NavigationMenuButtonItem onClick={() => setOpen((current) => !current)}>
           <NavigationMenuItemIcon>
             <SlidersHorizontal size={15} />
           </NavigationMenuItemIcon>
           <NavigationMenuItemLabel>Advanced Rules</NavigationMenuItemLabel>
-          <NavigationMenuItemTrailing indicator={<ChevronDown size={15} className={cn("shrink-0 text-foreground-muted transition-transform", open && "rotate-180")} />}>
-            <Text size="sm" tone="muted">{rules.length === 0 ? "None" : rules.length === 1 ? "1 rule" : `${rules.length} rules`}</Text>
+          <NavigationMenuItemTrailing indicator={<ChevronDown size={15} className={cn("shrink-0 text-foreground-muted transition-transform motion-reduce:transition-none", open && "rotate-180")} />}>
+            <Text size="sm" tone="muted">{rules.length === 0 ? "None" : ruleCount(rules.length)}</Text>
           </NavigationMenuItemTrailing>
         </NavigationMenuButtonItem>
       </NavigationMenu>
@@ -88,25 +111,29 @@ export function AdvancedRules({ rules, shareAs, locked, otherSyncs, onChange }: 
           <Text size="sm" tone="muted" className="px-0.5">
             Checked after Never Copy; first match wins. Each rule starts from {shareAsLabel(shareAs)}, which is also how anything no rule matches is shared.
           </Text>
-          <PremiumGate locked={locked} hint="Advanced rules are a Pro feature.">
+          <MenuGate active={locked && getCommercialMode()} hint="Advanced rules are a Pro feature." action={UPGRADE_ACTION}>
             <div className="flex flex-col">
               {/* Spacing sits inside each card rather than in a gap, so a card collapsing away takes it along. */}
-              <RevealGroup>
-                {rules.map((rule, index) => (
-                  <RevealItem key={rule.id}>
-                    <div className="pb-1.5">
-                      <RuleCard
-                        rule={rule}
-                        isFirst={index === 0}
-                        isLast={index === rules.length - 1}
-                        onChange={(next) => onChange(replaceAt(rules, index, next))}
-                        onMove={(offset) => onChange(moveItem(rules, index, index + offset))}
-                        onRemove={() => onChange(removeAt(rules, index))}
-                      />
-                    </div>
-                  </RevealItem>
-                ))}
-              </RevealGroup>
+              <div ref={listRef}>
+                <RevealGroup>
+                  {rules.map((rule, index) => (
+                    <RevealItem key={rule.id}>
+                      <div className="pb-1.5" data-rule-card>
+                        <RuleCard
+                          rule={rule}
+                          shareAs={shareAs}
+                          locked={locked}
+                          isFirst={index === 0}
+                          isLast={index === rules.length - 1}
+                          onChange={(next) => onChange(replaceAt(rules, index, next))}
+                          onMove={(offset) => onChange(moveItem(rules, index, index + offset))}
+                          onRemove={() => remove(index)}
+                        />
+                      </div>
+                    </RevealItem>
+                  ))}
+                </RevealGroup>
+              </div>
               <div className="flex flex-col gap-1.5">
                 <NavigationMenu className="border-dashed shadow-none">
                   <NavigationMenuItem>
@@ -119,36 +146,44 @@ export function AdvancedRules({ rules, shareAs, locked, otherSyncs, onChange }: 
                     </NavigationMenuItemTrailing>
                   </NavigationMenuItem>
                 </NavigationMenu>
-                <NavigationMenu>
-                  <NavigationMenuButtonItem disabled={rules.length >= MAX_ADVANCED_RULES} onClick={() => onChange([...rules, createRule()])}>
-                    <NavigationMenuItemIcon>
-                      <Plus size={15} />
-                    </NavigationMenuItemIcon>
-                    <NavigationMenuItemLabel>Add a Rule</NavigationMenuItemLabel>
-                  </NavigationMenuButtonItem>
-                  {donors.length > 0 && (
-                    <NavigationMenuPopover
-                      trigger={(
-                        <>
-                          <NavigationMenuItemIcon>
-                            <Copy size={15} />
-                          </NavigationMenuItemIcon>
-                          <NavigationMenuItemLabel>Copy Rules From…</NavigationMenuItemLabel>
-                        </>
+                <div ref={addRef}>
+                  <NavigationMenu>
+                    <NavigationMenuButtonItem disabled={locked || rules.length >= MAX_ADVANCED_RULES} onClick={() => onChange([...rules, createRule()])}>
+                      <NavigationMenuItemIcon>
+                        <Plus size={15} />
+                      </NavigationMenuItemIcon>
+                      <NavigationMenuItemLabel>Add a Rule</NavigationMenuItemLabel>
+                      {rules.length >= MAX_ADVANCED_RULES && (
+                        <NavigationMenuItemTrailing indicator={null}>
+                          <Text size="sm" tone="muted">Up to {MAX_ADVANCED_RULES}</Text>
+                        </NavigationMenuItemTrailing>
                       )}
-                    >
-                      {donors.map((sync) => (
-                        <CopyRulesOption key={sync.id} sync={sync} onCopy={copyFrom} />
-                      ))}
-                    </NavigationMenuPopover>
-                  )}
-                </NavigationMenu>
+                    </NavigationMenuButtonItem>
+                    {donors.length > 0 && (
+                      <NavigationMenuPopover
+                        disabled={locked || rules.length >= MAX_ADVANCED_RULES}
+                        trigger={(
+                          <>
+                            <NavigationMenuItemIcon>
+                              <Copy size={15} />
+                            </NavigationMenuItemIcon>
+                            <NavigationMenuItemLabel>Copy Rules From…</NavigationMenuItemLabel>
+                          </>
+                        )}
+                      >
+                        {donors.map((sync) => (
+                          <CopyRulesOption key={sync.id} sync={sync} onCopy={copyFrom} />
+                        ))}
+                      </NavigationMenuPopover>
+                    )}
+                  </NavigationMenu>
+                </div>
               </div>
             </div>
-          </PremiumGate>
+          </MenuGate>
         </div>
       </AnimatedReveal>
-    </>
+    </MotionConfig>
   );
 }
 
@@ -158,7 +193,7 @@ function CopyRulesOption({ sync, onCopy }: { sync: SyncSummary; onCopy: (sync: S
     <NavigationMenuButtonItem onClick={() => { onCopy(sync); close(); }}>
       <NavigationMenuItemLabel>{sync.name}</NavigationMenuItemLabel>
       <NavigationMenuItemTrailing indicator={null}>
-        <Text size="sm" tone="muted">{sync.rules.length === 1 ? "1 rule" : `${sync.rules.length} rules`}</Text>
+        <Text size="sm" tone="muted">{ruleCount(sync.rules.length)}</Text>
       </NavigationMenuItemTrailing>
     </NavigationMenuButtonItem>
   );
@@ -168,6 +203,8 @@ type Pending = { kind: "condition"; item: RuleCondition } | { kind: "action"; it
 
 interface RuleCardProps {
   rule: AdvancedRule;
+  shareAs: ShareAs;
+  locked: boolean;
   isFirst: boolean;
   isLast: boolean;
   onChange: (rule: AdvancedRule) => void;
@@ -175,10 +212,12 @@ interface RuleCardProps {
   onRemove: () => void;
 }
 
-function RuleCard({ rule, isFirst, isLast, onChange, onMove, onRemove }: RuleCardProps) {
+function RuleCard({ rule, shareAs, locked, isFirst, isLast, onChange, onMove, onRemove }: RuleCardProps) {
   const [pending, setPending] = useState<Pending>(null);
   const setConditions = (conditions: RuleCondition[]) => onChange({ ...rule, conditions });
   const setActions = (actions: RuleAction[]) => onChange({ ...rule, actions: normalizeActions(actions) });
+  const variables = templateVariablesFor(shareAs);
+  const problem = ruleProblem(rule);
 
   const addCondition = (kind: ConditionKind) => {
     const condition = createCondition(kind);
@@ -198,22 +237,19 @@ function RuleCard({ rule, isFirst, isLast, onChange, onMove, onRemove }: RuleCar
     setActions([...rule.actions, action]);
   };
 
-  const rename = (name: string) => {
-    if (syncRuleNameSchema.allows(name)) onChange({ ...rule, name });
-  };
-
   return (
     <div className="-mx-1 flex flex-col gap-1 rounded-[1.25rem] border border-border-elevated p-1">
       <ul className="flex flex-col p-0.5">
         <NavigationMenuEditableItem
           value={rule.name}
-          onCommit={rename}
+          disabled={locked}
+          onCommit={(name) => onChange({ ...rule, name })}
           trailing={(
             <div className="mr-2 flex shrink-0 items-center">
-              <RowIconButton label="Move rule up" disabled={isFirst} onClick={() => onMove(-1)}>
+              <RowIconButton label={`Move ${rule.name} up`} disabled={isFirst} onClick={() => onMove(-1)}>
                 <ArrowUp size={14} />
               </RowIconButton>
-              <RowIconButton label="Move rule down" disabled={isLast} onClick={() => onMove(1)}>
+              <RowIconButton label={`Move ${rule.name} down`} disabled={isLast} onClick={() => onMove(1)}>
                 <ArrowDown size={14} />
               </RowIconButton>
               <RowIconButton label={`Remove ${rule.name}`} onClick={onRemove}>
@@ -229,6 +265,7 @@ function RuleCard({ rule, isFirst, isLast, onChange, onMove, onRemove }: RuleCar
           <SegmentedControl
             label="Match"
             value={rule.match}
+            disabled={locked}
             options={[{ label: "All", value: "all" }, { label: "Any", value: "any" }]}
             onChange={(match) => onChange({ ...rule, match })}
           />
@@ -238,6 +275,7 @@ function RuleCard({ rule, isFirst, isLast, onChange, onMove, onRemove }: RuleCar
           <ConditionRow
             key={`${condition.kind}-${index}`}
             condition={condition}
+            disabled={locked}
             onChange={(next) => setConditions(replaceAt(rule.conditions, index, next))}
             onRemove={() => setConditions(removeAt(rule.conditions, index))}
           />
@@ -252,7 +290,7 @@ function RuleCard({ rule, isFirst, isLast, onChange, onMove, onRemove }: RuleCar
         <AddRuleItem
           label="Add a Condition"
           options={availableConditionKinds(rule).map((kind) => ({ kind, label: CONDITION_LABELS[kind] }))}
-          disabled={pending !== null}
+          disabled={locked || pending !== null}
           onAdd={addCondition}
         />
       </NavigationMenu>
@@ -264,6 +302,8 @@ function RuleCard({ rule, isFirst, isLast, onChange, onMove, onRemove }: RuleCar
           <ActionRow
             key={`${action.kind}-${index}`}
             action={action}
+            variables={variables}
+            disabled={locked}
             onChange={(next) => setActions(replaceAt(rule.actions, index, next))}
             onRemove={() => setActions(removeAt(rule.actions, index))}
           />
@@ -271,6 +311,7 @@ function RuleCard({ rule, isFirst, isLast, onChange, onMove, onRemove }: RuleCar
         {pending?.kind === "action" && (
           <ActionRow
             action={pending.item}
+            variables={variables}
             onChange={(next) => { setPending(null); setActions([...rule.actions, next]); }}
             onRemove={() => setPending(null)}
           />
@@ -278,10 +319,11 @@ function RuleCard({ rule, isFirst, isLast, onChange, onMove, onRemove }: RuleCar
         <AddRuleItem
           label="Add an Action"
           options={availableActionKinds(rule.actions).map((kind) => ({ kind, label: ACTION_LABELS[kind] }))}
-          disabled={pending !== null}
+          disabled={locked || pending !== null}
           onAdd={addAction}
         />
       </NavigationMenu>
+      {problem && <MenuHint tone="attention" className="px-3 pb-1">{problem}</MenuHint>}
     </div>
   );
 }

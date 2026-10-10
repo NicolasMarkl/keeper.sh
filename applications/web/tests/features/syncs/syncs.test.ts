@@ -4,7 +4,6 @@ import {
   PREVIEW_EVENTS,
   describeChange,
   describeConflicts,
-  describeRun,
   findDraftConflicts,
   newestFirst,
   previewEventsFor,
@@ -122,20 +121,10 @@ describe("conflicts", () => {
 });
 
 describe("activity descriptions", () => {
-  it("describes changes and runs in plain words", () => {
+  it("describes changes in plain words", () => {
     expect(describeChange({ calendarId: "school", kind: "calendar_added", role: "source" }, names)).toBe("Added School as a source.");
     expect(describeChange({ from: "full", kind: "share_as_changed", to: "busy_only" }, names))
       .toBe("Share As changed from Full Details to Busy Only.");
-    expect(describeRun({
-      added: 3,
-      copied: 10,
-      destinationCalendarId: "personal",
-      failed: 0,
-      removed: 1,
-      sharedDestination: false,
-      skipped: 2,
-      skippedBy: [{ count: 2, name: "All-day events", ruleId: "skip:all_day" }],
-    }, names)).toBe("Synced to Personal. 3 new, 1 removed. Skipping 2 events, most by all-day events.");
   });
 
   it("formats how long ago a sync ran", () => {

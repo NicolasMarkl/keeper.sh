@@ -6,7 +6,7 @@ const run = (id: string, createdAt: string, destinationCalendarId: string, overr
   createdAt,
   id,
   kind: "run",
-  run: { added: 0, copied: 0, destinationCalendarId, failed: 0, removed: 0, sharedDestination: false, skipped: 0, skippedBy: [], ...overrides },
+  run: { added: 0, copied: 0, destinationCalendarId, failed: 0, removed: 0, skipped: 0, skippedBy: [], ...overrides },
 });
 
 const change = (id: string, createdAt: string): SyncActivityEntry => ({ change: { kind: "resumed" }, createdAt, id, kind: "change" });
@@ -69,6 +69,11 @@ describe("describeActivitySummary", () => {
     expect(sentence.period).toBe("In the last 7 days,");
     expect(sentence.headline).toBe("copied 142 events and removed 25 copies across Work, Personal and Family.");
     expect(sentence.detail).toBe("Skipping 21 events, mostly focus time. Family is waiting on a reconnect.");
+  });
+
+  it("says a paused sync is holding new events back instead of reading out a stale week", () => {
+    const sentence = describeActivitySummary({ added: 0, removed: 0, skipped: 40, skippedBy: [] }, ["Work"], [], true);
+    expect(sentence).toEqual({ detail: "Copies already made stay as they are.", headline: "New events wait until you resume.", period: "Paused." });
   });
 
   it("says so when nothing moved", () => {

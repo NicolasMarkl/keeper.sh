@@ -1,12 +1,13 @@
-import { useState } from "react";
-import { useBlocker, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { useBlocker, useNavigate, useSearch } from "@tanstack/react-router";
 import useSWR from "swr";
 import Pause from "lucide-react/dist/esm/icons/pause";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2";
-import { diffSyncChanges, syncNameSchema } from "@keeper.sh/data-schemas";
-import type { PatchSyncBody, SyncDefinition, SyncDetail } from "@keeper.sh/data-schemas";
+import { addsProSettings, diffSyncChanges } from "@keeper.sh/data-schemas";
+import type { SyncDefinition, SyncDetail } from "@keeper.sh/data-schemas";
 import { BackButton } from "@/components/ui/primitives/back-button";
 import { DeleteConfirmation } from "@/components/ui/primitives/delete-confirmation";
+import { ErrorState } from "@/components/ui/primitives/error-state";
 import { MenuHint } from "@/components/ui/primitives/menu-hint";
 import { SegmentedControl } from "@/components/ui/primitives/segmented-control";
 import { PageBody } from "@/components/ui/primitives/page-body";
@@ -22,6 +23,7 @@ import {
 import { NavigationMenuEditableItem } from "@/components/ui/composites/navigation-menu/navigation-menu-editable";
 import { useEntitlements } from "@/hooks/use-entitlements";
 import { track, ANALYTICS_EVENTS } from "@/lib/analytics";
+import { HttpError } from "@/lib/fetcher";
 import type { CalendarSource } from "@/types/api";
 import { SyncActivity } from "@/features/syncs/components/sync-activity";
 import { SyncEditor } from "@/features/syncs/components/sync-editor";
@@ -32,8 +34,19 @@ import { SyncStatusDot } from "@/features/syncs/components/sync-status-dot";
 import { formatSyncedAgo } from "@/features/syncs/relative-time";
 import { SYNC_PANE_COLUMNS, SyncActionBar } from "@/features/syncs/components/sync-action-bar";
 import { cn } from "@/utils/cn";
-import { draftProblem, isRiskySave } from "@/features/syncs/sync-draft";
-import { resolveSyncError } from "@/features/syncs/sync-errors";
+import {
+  addCalendarToSync,
+  describeRemovals,
+  draftProblem,
+  pruneStaleEdits,
+  saveRemovals,
+  settleEdits,
+  syncNameProblem,
+  toPatchBody,
+  type SyncEdits,
+} from "@/features/syncs/sync-draft";
+import { isStaleSyncError, resolveSyncError } from "@/features/syncs/sync-errors";
+import { isSyncLocked, syncCalendarLimit } from "@/features/syncs/sync-plan";
 import {
   STATE_LABELS,
   describeChange,
@@ -43,20 +56,19 @@ import {
   syncSettingsOf,
   type CalendarsById,
 } from "@/features/syncs/syncs";
-import { deleteSync, patchSync, updateSync, useRefreshSyncs, useSync, useSyncs } from "@/features/syncs/use-syncs";
+import { useTrackConflicts } from "@/features/syncs/use-create-sync";
+import { deleteSync, patchSync, saveSync, useRefreshSyncs, useSync, useSyncs } from "@/features/syncs/use-syncs";
 
 export type SyncTab = "setup" | "activity";
 
-const PATCH_KEYS = [
-  "busyTitle", "destinationCalendarIds", "markPrivate", "memberCalendarIds", "mode", "name", "paused",
-  "rules", "shareAs", "skipAllDay", "skipFocusTime", "skipOutOfOffice", "skipTitleKeywords", "sourceCalendarIds",
-] as const satisfies readonly (keyof PatchSyncBody)[];
+const PRO_PROBLEM = "Pro settings need a Pro plan. Take out what you added to save.";
 
-const toPatchBody = (patch: Partial<SyncDefinition>): PatchSyncBody =>
-  Object.fromEntries(PATCH_KEYS.filter((key) => key in patch).map((key) => [key, patch[key]])) as PatchSyncBody;
+const readAddCalendar = (search: Record<string, unknown>): string | null =>
+  typeof search.addCalendar === "string" ? search.addCalendar : null;
 
 export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
   const navigate = useNavigate();
+  const addCalendar = readAddCalendar(useSearch({ strict: false }));
   const { data: sync, error, mutate } = useSync(syncId);
   const { data: syncs } = useSyncs();
   const { data: calendars } = useSWR<CalendarSource[]>("/api/sources");
@@ -65,14 +77,20 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [edits, setEdits] = useState<Partial<SyncDefinition>>({});
+  const [rawEdits, setEdits] = useState<SyncEdits>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
 
-  const draft = sync && { ...sync, ...edits };
-  const changes = sync && draft ? diffSyncChanges(sync, draft) : [];
+  // A sync deleted elsewhere leaves nothing to save, so its edits stop holding navigation back.
+  const deleted = error instanceof HttpError && error.status === 404;
+  const edits = calendars ? pruneStaleEdits(rawEdits, calendars) : rawEdits;
+  const draft: SyncDefinition | undefined = sync && { ...sync, ...edits };
+  const changes = sync && draft && !deleted ? diffSyncChanges(sync, draft) : [];
   const dirty = changes.length > 0;
+  const otherSyncs = (syncs ?? []).filter((other) => other.id !== syncId);
+  const conflicts = draft ? findDraftConflicts(draft, otherSyncs) : [];
+  useTrackConflicts(conflicts.length > 0);
 
   // Switching between Setup and Activity only changes the search, so the draft carries across.
   const blocker = useBlocker({
@@ -81,30 +99,73 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
     withResolver: true,
   });
 
-  if (error) return <RouteShell backFallback="/dashboard/syncs" status="error" onRetry={() => { void mutate(); }} />;
-  if (!sync || !draft || !calendars) return <RouteShell backFallback="/dashboard/syncs" status="loading" />;
+  // A calendar connected for this sync arrives as ?addCalendar; it joins the unsaved draft for the user to review and save.
+  useEffect(() => {
+    if (!addCalendar || !sync || !calendars) return;
+    const calendar = calendars.find((candidate) => candidate.id === addCalendar);
+    setEdits((current) => {
+      const added = addCalendarToSync({ ...sync, ...current }, calendar);
+      return added ? { ...current, ...added } : current;
+    });
+    void navigate({
+      params: { syncId },
+      replace: true,
+      search: { tab: tab === "activity" ? "activity" : undefined },
+      to: "/dashboard/syncs/$syncId",
+    });
+  }, [addCalendar, sync, calendars, navigate, syncId, tab]);
+
+  const discardDialog = (
+    <DiscardChangesConfirmation
+      open={blocker.status === "blocked"}
+      onKeepEditing={() => blocker.reset?.()}
+      onDiscard={() => blocker.proceed?.()}
+    />
+  );
+
+  if (error && (!sync || deleted)) {
+    return (
+      <>
+        <div className="flex flex-col gap-1.5">
+          <BackButton fallback="/dashboard/syncs" />
+          <ErrorState
+            message={deleted ? "This sync no longer exists. It may have been deleted somewhere else." : undefined}
+            onRetry={() => { void mutate(); }}
+          />
+        </div>
+        {discardDialog}
+      </>
+    );
+  }
+  if (!sync || !draft || !calendars) {
+    return (
+      <>
+        <RouteShell backFallback="/dashboard/syncs" status="loading" />
+        {discardDialog}
+      </>
+    );
+  }
 
   const calendarsById: CalendarsById = new Map(calendars.map((calendar) => [calendar.id, calendar] as const));
-  const locked = Boolean(entitlements && !entitlements.canUseEventFilters);
-  const otherSyncs = (syncs ?? []).filter((other) => other.id !== sync.id);
-  const conflicts = findDraftConflicts(draft, otherSyncs);
-  const problem = draftProblem(draft);
+  const locked = isSyncLocked(entitlements);
+  const proProblem = locked && addsProSettings(syncSettingsOf(sync), syncSettingsOf(draft)) ? PRO_PROBLEM : null;
+  const problem = draftProblem(draft, { calendarLimit: syncCalendarLimit(entitlements), saved: sync }) ?? proProblem;
+  const conflictMessage = conflicts.length > 0 ? describeConflicts(conflicts, calendarsById) : null;
+  const removals = describeRemovals(saveRemovals(sync, draft), calendarsById);
 
-  const applyNow = (patch: Partial<SyncDefinition>) => {
-    const body = toPatchBody(patch);
-    if (Object.keys(body).length === 0) return;
-    track(ANALYTICS_EVENTS.sync_updated, { field: Object.keys(body).join(",") });
+  // Name and Pause apply at once and never join the draft, so a later Save can't put back what they changed.
+  const applyNow = (patch: { name?: string; paused?: boolean }) => {
+    track(ANALYTICS_EVENTS.sync_updated, { field: Object.keys(patch).join(",") });
     setMutationError(null);
     void mutate({ ...sync, ...patch }, { revalidate: false });
-    patchSync(
-      syncId,
-      body,
-      (patchError) => {
+    patchSync(syncId, patch, {
+      onError: (patchError) => {
         setMutationError(resolveSyncError(patchError, "Failed to update this sync.", calendarsById));
         void mutate();
       },
-      () => { void refresh(syncId); },
-    );
+      onSaved: (updated) => { void mutate(updated, { revalidate: false }); },
+      onSettled: () => { void refresh(syncId); },
+    });
   };
 
   const setPaused = (paused: boolean) => {
@@ -113,16 +174,19 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
   };
 
   const save = async () => {
-    const body = toPatchBody(edits);
+    const sent = draft;
+    const body = toPatchBody(sync, sent);
     setSaving(true);
     setSaveError(null);
     try {
-      const updated = await updateSync(syncId, body);
-      track(ANALYTICS_EVENTS.sync_updated, { field: Object.keys(body).join(",") });
+      const updated = await saveSync(syncId, body);
+      track(ANALYTICS_EVENTS.sync_updated, { field: Object.keys(body).filter((key) => key !== "expectedUpdatedAt").join(",") });
       await mutate(updated, { revalidate: false });
-      setEdits({});
+      setEdits((current) => settleEdits(current, sent));
       void refresh(syncId);
     } catch (saveFailure) {
+      // The edits stay, laid over the latest copy, so the next Save is checked against what's there now.
+      if (isStaleSyncError(saveFailure)) await mutate();
       setSaveError(resolveSyncError(saveFailure, "Failed to save this sync.", calendarsById));
     } finally {
       setSaving(false);
@@ -131,7 +195,7 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
   };
 
   const requestSave = () => {
-    if (isRiskySave(changes)) setReviewOpen(true);
+    if (removals.length > 0) setReviewOpen(true);
     else void save();
   };
 
@@ -154,6 +218,7 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
     }
   };
 
+  const attention = [...(sync.sources ?? []), ...sync.destinations].some((status) => status.problem !== null);
 
   return (
     <div className="@container flex flex-col gap-1.5 lg:h-full">
@@ -167,7 +232,7 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
             value={tab}
             options={[
               { label: "Setup", value: "setup" },
-              { label: <ActivityTabLabel attention={sync.destinations.some((destination) => destination.problem !== null)} />, value: "activity" },
+              { label: <ActivityTabLabel attention={attention} />, value: "activity" },
             ]}
             onChange={(next) => {
               if (next === "activity") track(ANALYTICS_EVENTS.sync_activity_viewed);
@@ -184,19 +249,23 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
       <div className={cn("grid grid-cols-1 gap-x-8 lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)]", tab === "setup" && SYNC_PANE_COLUMNS)}>
         <div className={cn("flex min-w-0 flex-col lg:min-h-0", tab === "setup" && "@3xl:[--page-body-bleed-end:1rem]")}>
           <PageBody className="gap-1.5">
+            {error && <Text size="sm" tone="danger" className="px-0.5">Couldn't refresh this sync. Showing what was last loaded.</Text>}
             {mutationError && <Text size="sm" tone="danger" className="px-0.5">{mutationError}</Text>}
             {tab === "setup" ? (
               <>
                 <NavigationMenu>
+                  {/* A save going out holds these back, so they can't fold into it and lose their own result. */}
                   <NavigationMenuEditableItem
                     label="Name"
                     value={sync.name}
+                    disabled={saving}
                     onCommit={(name) => {
-                      if (syncNameSchema.allows(name)) applyNow({ name });
-                      else setMutationError("Sync name can't be empty.");
+                      const nameProblem = syncNameProblem(name);
+                      if (nameProblem) setMutationError(nameProblem);
+                      else applyNow({ name });
                     }}
                   />
-                  <NavigationMenuToggleItem checked={sync.paused} onCheckedChange={setPaused}>
+                  <NavigationMenuToggleItem checked={sync.paused} disabled={saving} onCheckedChange={setPaused}>
                     <NavigationMenuItemIcon>
                       <Pause size={15} />
                     </NavigationMenuItemIcon>
@@ -209,8 +278,9 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
                   calendars={calendars}
                   otherSyncs={otherSyncs}
                   locked={locked}
+                  saved={sync}
                   previewClassName="@3xl:hidden"
-                  notice={conflicts.length > 0 && <MenuHint tone="attention">{describeConflicts(conflicts, calendarsById)}</MenuHint>}
+                  notice={conflictMessage && <MenuHint tone="attention">{conflictMessage}</MenuHint>}
                   onChange={(patch) => setEdits((current) => ({ ...current, ...patch }))}
                 />
                 <div className="pt-3">
@@ -233,6 +303,7 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
                 />
                 <SaveSyncConfirmation
                   changes={[...new Set(changes.map((change) => describeChange(change, calendarsById)))]}
+                  removals={removals}
                   open={reviewOpen}
                   saving={saving}
                   onOpenChange={setReviewOpen}
@@ -258,16 +329,12 @@ export function SyncPage({ syncId, tab }: { syncId: string; tab: SyncTab }) {
       <SyncActionBar
         show={dirty}
         label="Unsaved changes"
-        message={saveError ?? problem}
+        message={saveError ?? problem ?? conflictMessage}
         busy={saving}
         secondary={{ label: "Discard", onClick: discard }}
         primary={{ label: "Save", onClick: requestSave, disabled: problem !== null || conflicts.length > 0 }}
       />
-      <DiscardChangesConfirmation
-        open={blocker.status === "blocked"}
-        onKeepEditing={() => blocker.reset?.()}
-        onDiscard={() => blocker.proceed?.()}
-      />
+      {discardDialog}
     </div>
   );
 }

@@ -109,7 +109,7 @@ export function SyncPreviewPanel({ settings, directions }: SyncPreviewPanelProps
 function PreviewSourceOption({ direction, picked, onPick }: { direction: PreviewDirection; picked: boolean; onPick: () => void }) {
   const { close } = usePopover();
   return (
-    <NavigationMenuButtonItem onClick={() => { onPick(); close(); }}>
+    <NavigationMenuButtonItem selected={picked} onClick={() => { onPick(); close(); }}>
       <NavigationMenuItemLabel>{direction.source}</NavigationMenuItemLabel>
       <NavigationMenuItemTrailing indicator={null} className="ml-auto shrink-0 grow-0 max-w-[55%]">
         <Text size="sm" tone="muted" align="right" className="min-w-0 truncate">To {direction.destinations.join(", ")}</Text>

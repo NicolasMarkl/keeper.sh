@@ -1,4 +1,14 @@
-import { SKIP_KEYWORDS_RULE_ID, compileSyncRules, deriveSyncPairs, evaluateRules, findMatchingRule } from "@keeper.sh/data-schemas";
+import {
+  SHARE_AS_RULE_ID,
+  SKIP_ALL_DAY_RULE_ID,
+  SKIP_FOCUS_TIME_RULE_ID,
+  SKIP_KEYWORDS_RULE_ID,
+  SKIP_OUT_OF_OFFICE_RULE_ID,
+  compileSyncRules,
+  deriveSyncPairs,
+  evaluateRules,
+  findMatchingRule,
+} from "@keeper.sh/data-schemas";
 import type {
   CompiledSyncRule,
   ShareAs,
@@ -7,7 +17,6 @@ import type {
   SyncChange,
   SyncConflict,
   SyncDefinition,
-  SyncRunRecord,
   SyncSettings,
   SyncSkip,
   SyncState,
@@ -177,14 +186,16 @@ export interface SyncPreview {
   followsShareAs: boolean;
 }
 
+const NEVER_COPY_RULE_IDS = new Set([SKIP_ALL_DAY_RULE_ID, SKIP_FOCUS_TIME_RULE_ID, SKIP_OUT_OF_OFFICE_RULE_ID, SKIP_KEYWORDS_RULE_ID]);
+
 const describeDecider = (rule: CompiledSyncRule | null, shareAs: ShareAs, title: string): string => {
-  if (!rule || rule.id === "share") return `Share As · ${shareAsLabel(shareAs)}`;
+  if (!rule || rule.id === SHARE_AS_RULE_ID) return `Share As · ${shareAsLabel(shareAs)}`;
   if (rule.id === SKIP_KEYWORDS_RULE_ID) {
     const keyword = rule.conditions.find((condition) =>
       condition.kind === "title_contains" && title.toLocaleLowerCase().includes(condition.value.toLocaleLowerCase()));
     if (keyword?.kind === "title_contains") return `Never Copy · Titles with “${keyword.value}”`;
   }
-  if (rule.id.startsWith("skip:")) return `Never Copy · ${rule.name}`;
+  if (NEVER_COPY_RULE_IDS.has(rule.id)) return `Never Copy · ${rule.name}`;
   return `Rule · ${rule.name}`;
 };
 
@@ -202,7 +213,7 @@ export const previewSync = (settings: SyncSettings, event: PreviewEvent, calenda
   };
   const decider = findMatchingRule(rules, facts);
   const decidedBy = describeDecider(decider, settings.shareAs, event.title);
-  const followsShareAs = !decider || decider.id === "share";
+  const followsShareAs = !decider || decider.id === SHARE_AS_RULE_ID;
   const evaluation = evaluateRules(rules, facts);
   if (evaluation.skip) return { copy: null, decidedBy, dropped: [], followsShareAs };
   const dropped = [
@@ -246,20 +257,6 @@ export const describeChange = (change: SyncChange, calendarsById: CalendarsById)
     case "paused": return "Paused. Copies stay as they are.";
     case "resumed": return "Resumed.";
   }
-};
-
-const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? "" : "s"}`;
-
-export const describeRun = (run: SyncRunRecord, calendarsById: CalendarsById): string => {
-  const destination = calendarName(calendarsById, run.destinationCalendarId);
-  const changes = [
-    run.added > 0 && `${run.added} new`,
-    run.removed > 0 && `${run.removed} removed`,
-    run.failed > 0 && `${plural(run.failed, "change")} failed`,
-  ].filter(Boolean);
-  const shared = run.sharedDestination ? " (shared with other syncs)" : "";
-  const skipped = run.skippedBy[0] ? ` Skipping ${plural(run.skipped, "event")}, most by ${run.skippedBy[0].name.toLowerCase()}.` : "";
-  return `Synced to ${destination}${shared}. ${changes.join(", ") || "No changes"}.${skipped}`;
 };
 
 export const syncSettingsOf = (sync: SyncDefinition): SyncSettings => ({

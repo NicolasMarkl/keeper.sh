@@ -2,21 +2,29 @@ import { useState, type PropsWithChildren } from "react";
 import CheckIcon from "lucide-react/dist/esm/icons/check";
 import Lock from "lucide-react/dist/esm/icons/lock";
 import ArrowRight from "lucide-react/dist/esm/icons/arrow-right";
+import RotateCcw from "lucide-react/dist/esm/icons/rotate-ccw";
+import { DEFAULT_BUSY_TITLE } from "@keeper.sh/data-schemas";
 import type { ShareAs, SyncSettings } from "@keeper.sh/data-schemas";
 import { DashboardSection } from "@/components/ui/primitives/dashboard-heading";
+import { MenuHint } from "@/components/ui/primitives/menu-hint";
+import { TemplateText } from "@/components/ui/primitives/template-text";
 import { Text } from "@/components/ui/primitives/text";
 import {
   NavigationMenu,
-  NavigationMenuButtonItem,
   NavigationMenuItem,
   NavigationMenuItemIcon,
   NavigationMenuItemLabel,
   NavigationMenuItemTrailing,
   NavigationMenuToggleItem,
 } from "@/components/ui/composites/navigation-menu/navigation-menu-items";
+import { NavigationMenuEditableTemplateItem } from "@/components/ui/composites/navigation-menu/navigation-menu-editable";
 import { cn } from "@/utils/cn";
 import { EVENT_COLORS } from "@/features/dashboard/components/event-card.styles";
+import { BUSY_TEMPLATE_VARIABLES } from "../rule-editing";
+import { busyTitleProblem } from "../sync-draft";
 import { SHARE_AS_OPTIONS, previewEventsFor, previewSync, type PreviewCopy } from "../syncs";
+import { RowIconButton } from "./row-remove-button";
+import { SelectableItem } from "./selectable-item";
 
 interface ShareAsSectionProps {
   settings: SyncSettings;
@@ -27,6 +35,8 @@ interface ShareAsSectionProps {
 }
 
 export function ShareAsSection({ settings, sourceName, locked, previewClassName, onChange }: ShareAsSectionProps) {
+  const titleProblem = busyTitleProblem(settings.busyTitle);
+
   return (
     <>
       <DashboardSection title="Share As" description="How copies look in the destination. Advanced rules start from this." />
@@ -35,11 +45,15 @@ export function ShareAsSection({ settings, sourceName, locked, previewClassName,
           <ShareAsOption
             key={option.value}
             option={option}
+            busyTitle={settings.busyTitle}
             selected={settings.shareAs === option.value}
             locked={locked && option.value !== "busy_only" && settings.shareAs !== option.value}
             onSelect={(shareAs) => onChange({ shareAs })}
           />
         ))}
+        {settings.shareAs === "busy_only" && (
+          <BusyTitleItem busyTitle={settings.busyTitle} locked={locked} onChange={(busyTitle) => onChange({ busyTitle })} />
+        )}
         <NavigationMenuToggleItem
           checked={settings.markPrivate}
           disabled={locked && !settings.markPrivate}
@@ -54,6 +68,7 @@ export function ShareAsSection({ settings, sourceName, locked, previewClassName,
           </div>
         </NavigationMenuToggleItem>
       </NavigationMenu>
+      {settings.shareAs === "busy_only" && titleProblem && <MenuHint tone="danger">{titleProblem}</MenuHint>}
       <SyncPreviewCard settings={settings} sourceName={sourceName} className={previewClassName} />
     </>
   );
@@ -61,23 +76,59 @@ export function ShareAsSection({ settings, sourceName, locked, previewClassName,
 
 interface ShareAsOptionProps {
   option: (typeof SHARE_AS_OPTIONS)[number];
+  busyTitle: string | null;
   selected: boolean;
   locked: boolean;
   onSelect: (shareAs: ShareAs) => void;
 }
 
-function ShareAsOption({ option, selected, locked, onSelect }: ShareAsOptionProps) {
+function ShareAsOption({ option, busyTitle, selected, locked, onSelect }: ShareAsOptionProps) {
+  const titled = option.value === "busy_only" && busyTitle !== null;
+
   return (
-    <NavigationMenuButtonItem disabled={locked} onClick={() => onSelect(option.value)}>
+    <SelectableItem role="radio" checked={selected} disabled={locked} onSelect={() => onSelect(option.value)}>
       <div className="flex min-w-0 flex-col">
         <NavigationMenuItemLabel>{option.label}</NavigationMenuItemLabel>
-        <Text size="xs" tone="muted">{option.description}</Text>
+        <Text size="xs" tone="muted" className="truncate">
+          {titled ? <>Just the time, titled “<TemplateText template={busyTitle} variables={BUSY_TEMPLATE_VARIABLES} />”</> : option.description}
+        </Text>
       </div>
       <NavigationMenuItemTrailing className="ml-auto shrink-0 grow-0">
         {locked && <Text size="xs" tone="muted">Pro</Text>}
         {selected && <CheckIcon size={14} className="text-foreground" />}
       </NavigationMenuItemTrailing>
-    </NavigationMenuButtonItem>
+    </SelectableItem>
+  );
+}
+
+interface BusyTitleItemProps {
+  busyTitle: string | null;
+  locked: boolean;
+  onChange: (busyTitle: string | null) => void;
+}
+
+// A free plan may keep, or reset, a title it already has, but not set a new one.
+function BusyTitleItem({ busyTitle, locked, onChange }: BusyTitleItemProps) {
+  const template = busyTitle ?? DEFAULT_BUSY_TITLE;
+  const reset = busyTitle !== null && (
+    <RowIconButton label="Reset the busy title to the calendar name" className="mr-2" onClick={() => onChange(null)}>
+      <RotateCcw size={14} />
+    </RowIconButton>
+  );
+
+  return (
+    <NavigationMenuEditableTemplateItem
+      label="Busy Title"
+      value={template}
+      disabled={locked}
+      trailing={reset || undefined}
+      renderInput={(live) => <TemplateText template={live} variables={BUSY_TEMPLATE_VARIABLES} />}
+      onCommit={(next) => onChange(next === DEFAULT_BUSY_TITLE ? null : next)}
+    >
+      <Text size="sm" tone="muted" className="min-w-0 flex-1 truncate text-right">
+        {locked && busyTitle === null ? "Pro" : <TemplateText template={template} variables={BUSY_TEMPLATE_VARIABLES} />}
+      </Text>
+    </NavigationMenuEditableTemplateItem>
   );
 }
 
