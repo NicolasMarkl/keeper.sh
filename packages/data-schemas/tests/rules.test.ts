@@ -6,7 +6,7 @@ import {
   ruleActionSchema,
   ruleConditionSchema,
   shareAsActions,
-  syncRuleNameSchema,
+  ruleNameSchema,
   type RuleAction,
   type RuleCondition,
   type RuleEventFacts,
@@ -40,9 +40,9 @@ describe("rule schemas", () => {
   });
 
   it("validates rule names", () => {
-    expect(syncRuleNameSchema.allows("   ")).toBe(false);
-    expect(syncRuleNameSchema.allows("a".repeat(81))).toBe(false);
-    expect(syncRuleNameSchema.allows("Busy only")).toBe(true);
+    expect(ruleNameSchema.allows("   ")).toBe(false);
+    expect(ruleNameSchema.allows("a".repeat(81))).toBe(false);
+    expect(ruleNameSchema.allows("Busy only")).toBe(true);
   });
 });
 

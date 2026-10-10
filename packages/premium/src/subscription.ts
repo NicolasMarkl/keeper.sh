@@ -4,9 +4,11 @@ import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import {
   FREE_ACCOUNT_LIMIT,
   FREE_FEED_LIMIT,
+  FREE_SYNC_CALENDAR_LIMIT,
   FREE_SYNC_LIMIT,
   PRO_ACCOUNT_LIMIT,
   PRO_FEED_LIMIT,
+  PRO_SYNC_CALENDAR_LIMIT,
   PRO_SYNC_LIMIT,
 } from "./constants";
 import { planSchema } from "@keeper.sh/data-schemas";
@@ -28,9 +30,11 @@ interface PremiumService {
   getUserSubscription: (userId: string) => Promise<UserSubscription>;
   getAccountLimit: (plan: Plan) => number;
   getSyncLimit: (plan: Plan) => number;
+  getSyncCalendarLimit: (plan: Plan) => number;
   getFeedLimit: (plan: Plan) => number;
   canAddAccount: (userId: string, currentCount: number) => Promise<boolean>;
   canAddSync: (userId: string, currentCount: number) => Promise<boolean>;
+  getUserSyncCalendarLimit: (userId: string) => Promise<number>;
   canAddFeed: (userId: string, currentCount: number) => Promise<boolean>;
   canUseEventFilters: (userId: string) => Promise<boolean>;
   canCustomizeIcalFeed: (userId: string) => Promise<boolean>;
@@ -79,6 +83,13 @@ const createPremiumService = (config: PremiumConfig): PremiumService => {
     return FREE_SYNC_LIMIT;
   };
 
+  const getSyncCalendarLimit = (plan: Plan): number => {
+    if (plan === "pro") {
+      return PRO_SYNC_CALENDAR_LIMIT;
+    }
+    return FREE_SYNC_CALENDAR_LIMIT;
+  };
+
   const getFeedLimit = (plan: Plan): number => {
     if (plan === "pro") {
       return PRO_FEED_LIMIT;
@@ -96,6 +107,11 @@ const createPremiumService = (config: PremiumConfig): PremiumService => {
     const subscription = await getUserSubscription(userId);
     const limit = getSyncLimit(subscription.plan);
     return currentCount < limit;
+  };
+
+  const getUserSyncCalendarLimit = async (userId: string): Promise<number> => {
+    const subscription = await getUserSubscription(userId);
+    return getSyncCalendarLimit(subscription.plan);
   };
 
   const canAddFeed = async (userId: string, currentCount: number): Promise<boolean> => {
@@ -122,9 +138,11 @@ const createPremiumService = (config: PremiumConfig): PremiumService => {
     canUseEventFilters,
     getAccountLimit,
     getFeedLimit,
+    getSyncCalendarLimit,
     getSyncLimit,
     getUserPlan,
     getUserSubscription,
+    getUserSyncCalendarLimit,
   };
 };
 

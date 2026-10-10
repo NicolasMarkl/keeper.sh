@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SYNC_SETTINGS,
+  MAX_ADVANCED_RULES,
+  MAX_SKIP_KEYWORDS,
+  MAX_SYNC_CALENDARS,
+  addsProSettings,
   compileSyncRules,
   createSyncBodySchema,
   deriveSyncPairs,
   diffSyncChanges,
   evaluateRules,
+  normalizeAdvancedRules,
   normalizeSkipKeywords,
   patchSyncBodySchema,
   resolveSyncState,
+  validateSyncCalendarLimit,
   validateSyncCalendars,
+  withoutProSettings,
   type RuleEventFacts,
   type SyncCalendars,
   type SyncDefinition,
@@ -215,5 +222,144 @@ describe("resolveSyncState", () => {
     expect(resolveSyncState({ hasProblem: true, pairCount: 0, paused: false })).toBe("empty");
     expect(resolveSyncState({ hasProblem: true, pairCount: 2, paused: false })).toBe("problem");
     expect(resolveSyncState({ hasProblem: false, pairCount: 2, paused: false })).toBe("ok");
+  });
+});
+
+const limitBody = (overrides: Record<string, unknown>) => ({ mode: "one_way", name: "Work", ...overrides });
+const calendarIdsOf = (count: number) => Array.from({ length: count }, (_value, index) => `calendar-${index}`);
+const keywordsOf = (count: number) => Array.from({ length: count }, (_value, index) => `word ${index}`);
+
+describe("body limits", () => {
+  const body = limitBody;
+  const rule = (value: string) => {
+    const { id: _id, ...unsaved } = oneOnOnes;
+    return { ...unsaved, conditions: [{ kind: "title_contains", value }] };
+  };
+
+  it("accepts each list at its limit and rejects one more", () => {
+    expect(createSyncBodySchema.allows(body({ sourceCalendarIds: calendarIdsOf(MAX_SYNC_CALENDARS) }))).toBe(true);
+    expect(createSyncBodySchema.allows(body({ sourceCalendarIds: calendarIdsOf(MAX_SYNC_CALENDARS + 1) }))).toBe(false);
+    expect(createSyncBodySchema.allows(body({ skipTitleKeywords: keywordsOf(MAX_SKIP_KEYWORDS) }))).toBe(true);
+    expect(createSyncBodySchema.allows(body({ skipTitleKeywords: keywordsOf(MAX_SKIP_KEYWORDS + 1) }))).toBe(false);
+    const rules = (count: number) => Array.from({ length: count }, () => rule("1:1"));
+    expect(createSyncBodySchema.allows(body({ rules: rules(MAX_ADVANCED_RULES) }))).toBe(true);
+    expect(createSyncBodySchema.allows(body({ rules: rules(MAX_ADVANCED_RULES + 1) }))).toBe(false);
+  });
+
+  it("caps and requires a real title_contains value", () => {
+    expect(createSyncBodySchema.allows(body({ rules: [rule("a".repeat(60))] }))).toBe(true);
+    expect(createSyncBodySchema.allows(body({ rules: [rule("a".repeat(61))] }))).toBe(false);
+    expect(createSyncBodySchema.allows(body({ rules: [rule("   ")] }))).toBe(false);
+  });
+
+  it("caps rule ids and the expected update time", () => {
+    expect(createSyncBodySchema.allows(body({ rules: [{ ...oneOnOnes, id: "x".repeat(65) }] }))).toBe(false);
+    expect(patchSyncBodySchema.allows({ expectedUpdatedAt: "2026-10-10T12:00:00.000Z" })).toBe(true);
+    expect(createSyncBodySchema.allows(body({ expectedUpdatedAt: "2026-10-10T12:00:00.000Z" }))).toBe(false);
+  });
+});
+
+describe("normalizeAdvancedRules", () => {
+  const uuid = "0b4c2d6e-8f10-4a22-9b34-c5d6e7f8a9b0";
+  let next = 0;
+  const createId = () => `fresh-${next++}`;
+
+  it("keeps an unused uuid and replaces missing, reserved, malformed and repeated ids", () => {
+    next = 0;
+    const rules = normalizeAdvancedRules([
+      { ...oneOnOnes, id: uuid },
+      { ...oneOnOnes, id: uuid },
+      { ...oneOnOnes, id: "share" },
+      { ...oneOnOnes, id: "skip:all_day" },
+      { actions: oneOnOnes.actions, conditions: oneOnOnes.conditions, match: oneOnOnes.match, name: oneOnOnes.name },
+    ], createId);
+    expect(rules.map((rule) => rule.id)).toEqual([uuid, "fresh-0", "fresh-1", "fresh-2", "fresh-3"]);
+  });
+
+  it("trims names and condition values", () => {
+    const [rule] = normalizeAdvancedRules([
+      { ...oneOnOnes, conditions: [{ kind: "title_contains", value: "  1:1 " }], name: " Vague " },
+    ], createId);
+    expect(rule?.name).toBe("Vague");
+    expect(rule?.conditions).toEqual([{ kind: "title_contains", value: "1:1" }]);
+  });
+});
+
+describe("Busy Only and the event's own title", () => {
+  it("drops {{event_name}} from a rule's rename and from the busy title", () => {
+    const rules = compileSyncRules(settings({
+      busyTitle: "{{event_name}}",
+      rules: [{ ...oneOnOnes, actions: [{ kind: "rename", template: "{{event_name}} (away)" }] }],
+    }));
+    expect(evaluateRules(rules, facts({ title: "1:1 with Priya" }))).toEqual({ skip: false, summary: "(away)" });
+    expect(evaluateRules(rules, facts())).toEqual({ skip: false, summary: "Work" });
+  });
+
+  it("keeps {{event_name}} when Share As already shares titles", () => {
+    const rules = compileSyncRules(settings({
+      rules: [{ ...oneOnOnes, actions: [{ kind: "rename", template: "{{event_name}} (away)" }] }],
+      shareAs: "title_only",
+    }));
+    expect(evaluateRules(rules, facts({ title: "1:1 with Priya" }))).toEqual({ skip: false, summary: "1:1 with Priya (away)" });
+  });
+
+  it("orders the toggles, then keywords, then rules, then Share As", () => {
+    const rules = compileSyncRules(settings({
+      rules: [oneOnOnes],
+      skipAllDay: true,
+      skipFocusTime: true,
+      skipOutOfOffice: true,
+      skipTitleKeywords: ["Lunch"],
+    }));
+    expect(rules.map((rule) => rule.id)).toEqual([
+      "skip:all_day",
+      "skip:focus_time",
+      "skip:out_of_office",
+      "skip:keywords",
+      "rule-1",
+      "share",
+    ]);
+  });
+});
+
+describe("plan limits", () => {
+  it("lets free plans keep or take away Pro settings a sync has, but not add any", () => {
+    const pro = settings({ rules: [oneOnOnes], skipAllDay: true, skipFocusTime: true, skipTitleKeywords: ["Lunch"] });
+    expect(addsProSettings(null, settings())).toBe(false);
+    expect(addsProSettings(null, settings({ skipAllDay: true }))).toBe(true);
+    expect(addsProSettings(pro, pro)).toBe(false);
+    expect(addsProSettings(pro, { ...pro, rules: [], skipAllDay: false })).toBe(false);
+    expect(addsProSettings(pro, { ...pro, skipOutOfOffice: true })).toBe(true);
+    expect(addsProSettings(pro, { ...pro, skipTitleKeywords: ["Lunch", "Gym"] })).toBe(true);
+    expect(addsProSettings(pro, { ...pro, rules: [{ ...oneOnOnes, name: "Changed" }] })).toBe(true);
+    expect(addsProSettings(pro, { ...pro, rules: [structuredClone(oneOnOnes)] })).toBe(false);
+  });
+
+  it("resets every Pro setting for a free draft", () => {
+    const free = withoutProSettings({ ...definition(), markPrivate: true, rules: [oneOnOnes], shareAs: "full", skipAllDay: true });
+    expect(addsProSettings(null, free)).toBe(false);
+    expect(free.name).toBe("Work Blocks Personal");
+  });
+
+  it("caps each calendar list, keeping lists that were already longer", () => {
+    expect(validateSyncCalendarLimit(oneWay(["a", "b", "c"], ["d", "e", "f"]), null, 3)).toBeNull();
+    expect(validateSyncCalendarLimit(oneWay(["a", "b", "c", "x"], ["d"]), null, 3)).toMatch(/up to 3/);
+    expect(validateSyncCalendarLimit(bothWays(["a", "b", "c", "d"]), null, 3)).toMatch(/both ways/);
+    const migrated = oneWay(["a", "b", "c", "x"], ["d"]);
+    expect(validateSyncCalendarLimit(oneWay(["a", "b", "c", "y"], ["d"]), migrated, 3)).toBeNull();
+    expect(validateSyncCalendarLimit(oneWay(["a", "b", "c", "x", "y"], ["d"]), migrated, 3)).toMatch(/up to 3/);
+    expect(validateSyncCalendarLimit(bothWays(["a", "b", "c", "x"]), migrated, 3)).toMatch(/both ways/);
+    expect(validateSyncCalendarLimit(oneWay(calendarIdsOf(50), ["d"]), null, Infinity)).toBeNull();
+  });
+});
+
+describe("diffSyncChanges details", () => {
+  it("reports a keyword whose case changed and ignores rule key order", () => {
+    const before = definition({ rules: [oneOnOnes], skipTitleKeywords: ["lunch"] });
+    const reordered = { name: oneOnOnes.name, match: oneOnOnes.match, id: oneOnOnes.id, conditions: oneOnOnes.conditions, actions: oneOnOnes.actions };
+    expect(diffSyncChanges(before, { ...before, rules: [reordered], skipTitleKeywords: ["Lunch"] })).toEqual([
+      { keyword: "Lunch", kind: "keyword_added" },
+      { keyword: "lunch", kind: "keyword_removed" },
+    ]);
   });
 });

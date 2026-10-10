@@ -3,9 +3,9 @@ import {
   ruleActionSchema,
   ruleConditionSchema,
   ruleMatchSchema,
-  syncRuleNameSchema,
-} from "./sync-rules";
-import type { RuleAction, RuleCondition, RuleMatch } from "./sync-rules";
+  ruleNameSchema,
+} from "./rules";
+import type { RuleAction, RuleCondition, RuleMatch } from "./rules";
 
 const SYNC_NAME_MAX_LENGTH = 80;
 const BUSY_TITLE_MAX_LENGTH = 200;
@@ -17,6 +17,9 @@ const MAX_RULE_ACTIONS = 5;
 const MAX_SYNC_CALENDARS = 50;
 const MAX_BOTH_WAYS_MEMBERS = 8;
 const DEFAULT_BUSY_TITLE = "{{calendar_name}}";
+const RULE_ID_MAX_LENGTH = 64;
+const RULE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EVENT_NAME_TOKEN_PATTERN = /\{\{event_name\}\}/g;
 
 const syncModeSchema = type("'one_way' | 'both_ways'");
 type SyncMode = typeof syncModeSchema.infer;
@@ -48,11 +51,11 @@ const busyTitleSchema = type(`string <= ${BUSY_TITLE_MAX_LENGTH}`).or("null");
 const calendarIdsSchema = type("string[]").atMostLength(MAX_SYNC_CALENDARS);
 
 const advancedRuleSchema = type({
-  "id?": "string",
+  "id?": `string <= ${RULE_ID_MAX_LENGTH}`,
   actions: ruleActionSchema.array().atLeastLength(1).atMostLength(MAX_RULE_ACTIONS),
   conditions: ruleConditionSchema.array().atLeastLength(1).atMostLength(MAX_RULE_CONDITIONS),
   match: ruleMatchSchema,
-  name: syncRuleNameSchema,
+  name: ruleNameSchema,
   "+": "reject",
 });
 type AdvancedRuleInput = typeof advancedRuleSchema.infer;
@@ -90,6 +93,7 @@ type CreateSyncBody = typeof createSyncBodySchema.infer;
 
 const patchSyncBodySchema = type({
   ...syncSettingsDefinition,
+  "expectedUpdatedAt?": "string <= 40",
   "mode?": syncModeSchema,
   "name?": syncNameSchema,
   "+": "reject",
@@ -189,6 +193,63 @@ const normalizeSkipKeywords = (keywords: readonly string[]): string[] => {
   return normalized;
 };
 
+// Ids key skip tallies and the preview, so only an unused uuid survives; anything else gets a fresh one.
+const normalizeAdvancedRules = (rules: readonly AdvancedRuleInput[], createId: () => string): AdvancedRule[] => {
+  const used = new Set<string>();
+  return rules.map((rule) => {
+    let { id } = rule;
+    if (!id || !RULE_ID_PATTERN.test(id) || used.has(id)) {
+      id = createId();
+    }
+    used.add(id);
+    return {
+      actions: rule.actions,
+      conditions: rule.conditions.map((condition) => {
+        if (condition.kind === "title_contains") {
+          return { kind: condition.kind, value: condition.value.trim() };
+        }
+        return condition;
+      }),
+      id,
+      match: rule.match,
+      name: rule.name.trim(),
+    };
+  });
+};
+
+const sameCalendars = (left: SyncCalendars, right: SyncCalendars): boolean =>
+  left.mode === right.mode
+  && JSON.stringify(left.sourceCalendarIds) === JSON.stringify(right.sourceCalendarIds)
+  && JSON.stringify(left.destinationCalendarIds) === JSON.stringify(right.destinationCalendarIds)
+  && JSON.stringify(left.memberCalendarIds) === JSON.stringify(right.memberCalendarIds);
+
+const calendarLists = (calendars: SyncCalendars): string[][] => {
+  if (calendars.mode === "both_ways") {
+    return [calendars.memberCalendarIds];
+  }
+  return [calendars.sourceCalendarIds, calendars.destinationCalendarIds];
+};
+
+// A list may stay as long as it already was, so a sync made before the limit keeps its calendars.
+const validateSyncCalendarLimit = (
+  next: SyncCalendars,
+  current: SyncCalendars | null,
+  limit: number,
+): string | null => {
+  let before: string[][] = [];
+  if (current && current.mode === next.mode) {
+    before = calendarLists(current);
+  }
+  const over = calendarLists(next).some((list, index) => list.length > Math.max(limit, before[index]?.length ?? 0));
+  if (!over) {
+    return null;
+  }
+  if (next.mode === "both_ways") {
+    return `Free plans sync up to ${limit} calendars both ways.`;
+  }
+  return `Free plans copy from up to ${limit} calendars into up to ${limit}.`;
+};
+
 interface SyncPair {
   destinationCalendarId: string;
   sourceCalendarId: string;
@@ -234,10 +295,12 @@ const SHARE_AS_RULE_ID = "share";
 
 const SKIP: RuleAction[] = [{ kind: "skip" }];
 
+const withoutEventName = (template: string): string => template.replace(EVENT_NAME_TOKEN_PATTERN, "").trim();
+
 const shareAsActions = (shareAs: ShareAs, busyTitle: string | null): RuleAction[] => {
   if (shareAs === "busy_only") {
     return [
-      { kind: "rename", template: busyTitle?.trim() || DEFAULT_BUSY_TITLE },
+      { kind: "rename", template: withoutEventName(busyTitle ?? "") || DEFAULT_BUSY_TITLE },
       { kind: "drop_description" },
       { kind: "drop_location" },
     ];
@@ -257,9 +320,16 @@ const withPrivacy = (actions: RuleAction[], markPrivate: boolean): RuleAction[] 
 };
 
 // A rule starts from Share As, so what Share As hides stays hidden; the rule's own rename replaces Share As's.
-const onShareAs = (actions: RuleAction[], shareAs: RuleAction[]): RuleAction[] => {
+// Under Busy Only that rename can't bring the event's own title back.
+const onShareAs = (actions: RuleAction[], shareAs: ShareAs, shareAsRules: RuleAction[]): RuleAction[] => {
   const renames = actions.some((action) => action.kind === "rename");
-  return [...shareAs.filter((action) => !renames || action.kind !== "rename"), ...actions];
+  const own = actions.map((action): RuleAction => {
+    if (shareAs === "busy_only" && action.kind === "rename") {
+      return { kind: "rename", template: withoutEventName(action.template) || DEFAULT_BUSY_TITLE };
+    }
+    return action;
+  });
+  return [...shareAsRules.filter((action) => !renames || action.kind !== "rename"), ...own];
 };
 
 // Never Copy first so a skip toggle is a guarantee; Share As last so nothing lands behind the catch-all.
@@ -287,7 +357,7 @@ const compileSyncRules = (settings: SyncSettings): CompiledSyncRule[] => {
   const shareAs = shareAsActions(settings.shareAs, settings.busyTitle);
   for (const rule of settings.rules) {
     if (rule.conditions.length > 0 && rule.actions.length > 0) {
-      rules.push({ ...rule, actions: withPrivacy(onShareAs(rule.actions, shareAs), settings.markPrivate) });
+      rules.push({ ...rule, actions: withPrivacy(onShareAs(rule.actions, settings.shareAs, shareAs), settings.markPrivate) });
     }
   }
   rules.push({
@@ -298,6 +368,49 @@ const compileSyncRules = (settings: SyncSettings): CompiledSyncRule[] => {
     name: "Share As",
   });
   return rules;
+};
+
+const canonicalJson = (value: unknown): string => JSON.stringify(value, (_key, nested: unknown) => {
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    const keys = Object.keys(nested);
+    keys.sort();
+    return Object.fromEntries(keys.map((key) => [key, (nested as Record<string, unknown>)[key]]));
+  }
+  return nested;
+});
+
+const withoutProSettings = <TSettings extends SyncSettings>(settings: TSettings): TSettings => ({
+  ...settings,
+  busyTitle: DEFAULT_SYNC_SETTINGS.busyTitle,
+  markPrivate: DEFAULT_SYNC_SETTINGS.markPrivate,
+  rules: DEFAULT_SYNC_SETTINGS.rules,
+  shareAs: DEFAULT_SYNC_SETTINGS.shareAs,
+  skipAllDay: DEFAULT_SYNC_SETTINGS.skipAllDay,
+  skipFocusTime: DEFAULT_SYNC_SETTINGS.skipFocusTime,
+  skipOutOfOffice: DEFAULT_SYNC_SETTINGS.skipOutOfOffice,
+  skipTitleKeywords: DEFAULT_SYNC_SETTINGS.skipTitleKeywords,
+});
+
+const PRO_TOGGLES = ["markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice"] as const;
+
+// Free plans may keep, and take away from, the Pro settings a sync already has, but not add new ones.
+const addsProSettings = (current: SyncSettings | null, next: SyncSettings): boolean => {
+  const keep = current ?? DEFAULT_SYNC_SETTINGS;
+  if (next.shareAs !== DEFAULT_SYNC_SETTINGS.shareAs && next.shareAs !== keep.shareAs) {
+    return true;
+  }
+  if (next.busyTitle !== DEFAULT_SYNC_SETTINGS.busyTitle && next.busyTitle !== keep.busyTitle) {
+    return true;
+  }
+  if (PRO_TOGGLES.some((key) => next[key] && !keep[key])) {
+    return true;
+  }
+  const keywords = new Set(keep.skipTitleKeywords.map((keyword) => keyword.toLocaleLowerCase()));
+  if (next.skipTitleKeywords.some((keyword) => !keywords.has(keyword.toLocaleLowerCase()))) {
+    return true;
+  }
+  const rules = new Set(keep.rules.map((rule) => canonicalJson(rule)));
+  return next.rules.some((rule) => !rules.has(canonicalJson(rule)));
 };
 
 type SyncSkip = "all_day" | "focus_time" | "out_of_office";
@@ -358,8 +471,8 @@ const SKIP_KEYS: [SyncSkip, "skipAllDay" | "skipFocusTime" | "skipOutOfOffice"][
 ];
 
 const missingKeywords = (keywords: readonly string[], from: readonly string[]): string[] => {
-  const present = new Set(from.map((keyword) => keyword.toLocaleLowerCase()));
-  return keywords.filter((keyword) => !present.has(keyword.toLocaleLowerCase()));
+  const present = new Set(from);
+  return keywords.filter((keyword) => !present.has(keyword));
 };
 
 const diffSkips = (previous: SyncSettings, next: SyncSettings): SyncChange[] => [
@@ -383,7 +496,7 @@ const diffSharing = (previous: SyncSettings, next: SyncSettings): SyncChange[] =
   if (previous.markPrivate !== next.markPrivate) {
     changes.push({ kind: "private_changed", to: next.markPrivate });
   }
-  if (JSON.stringify(previous.rules) !== JSON.stringify(next.rules)) {
+  if (canonicalJson(previous.rules) !== canonicalJson(next.rules)) {
     changes.push({ kind: "rules_changed" });
   }
   return changes;
@@ -422,14 +535,19 @@ const resolveSyncState = (input: { hasProblem: boolean; pairCount: number; pause
   return "ok";
 };
 
-type SyncDestinationProblem = "reauth" | "disabled" | "failing";
+type SyncCalendarProblem = "reauth" | "disabled" | "failing";
 
 interface SyncDestinationStatus {
   calendarId: string;
   copiedCount: number;
   lastSyncedAt: string | null;
-  problem: SyncDestinationProblem | null;
+  problem: SyncCalendarProblem | null;
   skippedCount: number;
+}
+
+interface SyncSourceStatus {
+  calendarId: string;
+  problem: SyncCalendarProblem | null;
 }
 
 interface SyncSummary extends SyncDefinition {
@@ -445,6 +563,7 @@ interface SyncSummary extends SyncDefinition {
 
 interface SyncDetail extends SyncSummary {
   destinations: SyncDestinationStatus[];
+  sources: SyncSourceStatus[];
 }
 
 interface SyncRunRecord {
@@ -453,7 +572,6 @@ interface SyncRunRecord {
   destinationCalendarId: string;
   failed: number;
   removed: number;
-  sharedDestination: boolean;
   skipped: number;
   skippedBy: { count: number; name: string; ruleId: string }[];
 }
@@ -462,7 +580,7 @@ type SyncActivityEntry =
   | { change: SyncChange; createdAt: string; id: string; kind: "change" }
   | { createdAt: string; id: string; kind: "run"; run: SyncRunRecord };
 
-// Added and removed count the window's runs; skipped is where each destination's latest run left things.
+// Added and removed are the window's daily totals; skipped is where the sync's pairs stand now.
 interface SyncActivitySummary {
   added: number;
   removed: number;
@@ -490,30 +608,36 @@ export {
   DEFAULT_SYNC_SETTINGS,
   MAX_ADVANCED_RULES,
   MAX_BOTH_WAYS_MEMBERS,
+  MAX_RULE_ACTIONS,
+  MAX_RULE_CONDITIONS,
   MAX_SKIP_KEYWORDS,
+  MAX_SYNC_CALENDARS,
   SHARE_AS_RULE_ID,
   SKIP_ALL_DAY_RULE_ID,
   SKIP_FOCUS_TIME_RULE_ID,
   SKIP_KEYWORDS_RULE_ID,
+  SKIP_KEYWORD_MAX_LENGTH,
   SKIP_OUT_OF_OFFICE_RULE_ID,
   SYNC_NAME_MAX_LENGTH,
-  advancedRuleSchema,
+  addsProSettings,
   compileSyncRules,
   createSyncBodySchema,
   deriveSyncPairs,
   diffSyncChanges,
+  normalizeAdvancedRules,
   normalizeSkipKeywords,
   normalizeSyncCalendars,
   patchSyncBodySchema,
   resolveSyncState,
+  sameCalendars,
   shareAsActions,
-  shareAsSchema,
   syncCalendarIds,
-  syncModeSchema,
   syncNameSchema,
   toShareAs,
   toSyncMode,
+  validateSyncCalendarLimit,
   validateSyncCalendars,
+  withoutProSettings,
 };
 export type {
   AdvancedRule,
@@ -528,9 +652,9 @@ export type {
   SyncCalendarRole,
   SyncCalendars,
   SyncChange,
+  SyncCalendarProblem,
   SyncConflict,
   SyncDefinition,
-  SyncDestinationProblem,
   SyncDestinationStatus,
   SyncDetail,
   SyncMode,
@@ -538,6 +662,7 @@ export type {
   SyncRunRecord,
   SyncSettings,
   SyncSkip,
+  SyncSourceStatus,
   SyncState,
   SyncSummary,
 };

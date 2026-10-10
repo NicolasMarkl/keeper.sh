@@ -2,12 +2,17 @@ import { type } from "arktype";
 
 const RULE_NAME_MAX_LENGTH = 80;
 const RULE_TEMPLATE_MAX_LENGTH = 200;
+const RULE_CONDITION_VALUE_MAX_LENGTH = 60;
 const TEMPLATE_TOKEN_PATTERN = /\{\{(\w+)\}\}/g;
 const DEFAULT_EVENT_NAME = "Busy";
 
+const ruleConditionValueSchema = type(`string <= ${RULE_CONDITION_VALUE_MAX_LENGTH}`).narrow(
+  (value) => value.trim().length > 0,
+);
+
 const ruleConditionSchema = type({
   kind: "'title_contains'",
-  value: "string >= 1",
+  value: ruleConditionValueSchema,
   "+": "reject",
 }).or({
   kind: "'all_day' | 'timed' | 'focus_time' | 'out_of_office'",
@@ -33,7 +38,7 @@ type RuleMatch = typeof ruleMatchSchema.infer;
 
 /* A rule name is shown to the user and must survive a round trip, so an
  * all-whitespace name is rejected rather than silently stored. */
-const syncRuleNameSchema = type(`string <= ${RULE_NAME_MAX_LENGTH}`).narrow(
+const ruleNameSchema = type(`string <= ${RULE_NAME_MAX_LENGTH}`).narrow(
   (value) => value.trim().length > 0,
 );
 
@@ -151,21 +156,21 @@ const evaluateRules = <TRule extends MatchableRule & { actions: readonly RuleAct
 };
 
 export {
+  RULE_CONDITION_VALUE_MAX_LENGTH,
+  RULE_NAME_MAX_LENGTH,
+  RULE_TEMPLATE_MAX_LENGTH,
   applyRuleActions,
   evaluateRules,
   findMatchingRule,
-  matchesCondition,
-  matchesRule,
   resolveEventNameTemplate,
   ruleActionSchema,
   ruleConditionSchema,
   ruleMatchSchema,
-  syncRuleNameSchema,
+  ruleNameSchema,
 };
 export type {
   RuleAction,
   RuleCondition,
-  RuleEvaluation,
   RuleEventFacts,
   RuleMatch,
 };

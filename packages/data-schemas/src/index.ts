@@ -590,24 +590,23 @@ export {
 };
 
 export {
+  RULE_CONDITION_VALUE_MAX_LENGTH,
+  RULE_NAME_MAX_LENGTH,
+  RULE_TEMPLATE_MAX_LENGTH,
   applyRuleActions,
   evaluateRules,
   findMatchingRule,
-  matchesCondition,
-  matchesRule,
   resolveEventNameTemplate,
   ruleActionSchema,
   ruleConditionSchema,
-  ruleMatchSchema,
-  syncRuleNameSchema,
-} from "./sync-rules";
+  ruleNameSchema,
+} from "./rules";
 export type {
   RuleAction,
   RuleCondition,
-  RuleEvaluation,
   RuleEventFacts,
   RuleMatch,
-} from "./sync-rules";
+} from "./rules";
 export * from "./syncs";
 
 export type {
