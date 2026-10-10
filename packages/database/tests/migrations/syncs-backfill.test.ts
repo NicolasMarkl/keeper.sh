@@ -101,6 +101,7 @@ const withConnection = async <Result>(
 interface SyncRow {
   busyTitle: string | null;
   calendars: string;
+  earlier: unknown[] | null;
   markPrivate: boolean;
   mode: string;
   name: string;
@@ -117,6 +118,7 @@ interface PairRow {
 }
 
 const ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
+const SECOND_ACCOUNT_ID = "33333333-3333-4333-8333-333333333333";
 
 const seedCalendars = async (client: Client): Promise<void> => {
   await client.query(`
@@ -130,28 +132,36 @@ const seedCalendars = async (client: Client): Promise<void> => {
       ('22222222-2222-4222-8222-222222222222', 'idle-user', 'google', 'oauth')
   `);
   await client.query(`
+    INSERT INTO "calendar_accounts" ("id", "userId", "provider", "authType", "email") VALUES
+      ('${SECOND_ACCOUNT_ID}', 'mapped-user', 'outlook', 'oauth', 'other@keeper.test')
+  `);
+  await client.query(`
     INSERT INTO "calendars" (
       "id", "userId", "accountId", "name", "calendarType", "capabilities",
       "excludeEventName", "customEventName", "excludeEventDescription", "excludeEventLocation",
-      "markEventsAsPrivate", "excludeAllDayEvents", "excludeFocusTime"
+      "markEventsAsPrivate", "excludeAllDayEvents", "excludeFocusTime", "excludeOutOfOffice"
     ) VALUES
-      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'mapped-user', '${ACCOUNT_ID}', 'Work', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('abababab-abab-4bab-8bab-abababababab', 'mapped-user', '${ACCOUNT_ID}', 'School', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'mapped-user', '${ACCOUNT_ID}', 'Custom', 'oauth', '{pull,push}', false, '{{calendar_name}}', false, false, true, true, false),
-      ('bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc', 'mapped-user', '${ACCOUNT_ID}', 'Named', 'oauth', '{pull,push}', true, 'Taken', true, true, false, false, true),
-      ('bdbdbdbd-bdbd-4dbd-8dbd-bdbdbdbdbdbd', 'mapped-user', '${ACCOUNT_ID}', 'Partial', 'oauth', '{pull,push}', false, '{{calendar_name}}', true, false, false, false, false),
-      ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'mapped-user', '${ACCOUNT_ID}', 'Personal', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd', 'mapped-user', '${ACCOUNT_ID}', 'Family', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'idle-user', '22222222-2222-4222-8222-222222222222', 'Unmapped', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, true, false),
-      ('e1000000-0000-4000-8000-000000000001', 'mapped-user', '${ACCOUNT_ID}', 'MeshA', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('e1000000-0000-4000-8000-000000000002', 'mapped-user', '${ACCOUNT_ID}', 'MeshB', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('e1000000-0000-4000-8000-000000000003', 'mapped-user', '${ACCOUNT_ID}', 'MeshC', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('e1000000-0000-4000-8000-000000000004', 'mapped-user', '${ACCOUNT_ID}', 'Extra', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('f1000000-0000-4000-8000-000000000001', 'mapped-user', '${ACCOUNT_ID}', 'Mine', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('f1000000-0000-4000-8000-000000000002', 'mapped-user', '${ACCOUNT_ID}', 'Theirs', 'oauth', '{pull,push}', false, '{{calendar_name}}', false, false, false, false, false),
-      ('a1000000-0000-4000-8000-000000000001', 'mapped-user', '${ACCOUNT_ID}', 'ChainA', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('a1000000-0000-4000-8000-000000000002', 'mapped-user', '${ACCOUNT_ID}', 'ChainB', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false),
-      ('a1000000-0000-4000-8000-000000000003', 'mapped-user', '${ACCOUNT_ID}', 'ChainC', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false)
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'mapped-user', '${ACCOUNT_ID}', 'Work', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('abababab-abab-4bab-8bab-abababababab', 'mapped-user', '${ACCOUNT_ID}', 'School', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'mapped-user', '${ACCOUNT_ID}', 'Custom', 'oauth', '{pull,push}', false, '{{calendar_name}}', false, false, true, true, false, false),
+      ('bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc', 'mapped-user', '${ACCOUNT_ID}', 'Named', 'oauth', '{pull,push}', true, 'Taken', true, true, false, false, true, false),
+      ('bdbdbdbd-bdbd-4dbd-8dbd-bdbdbdbdbdbd', 'mapped-user', '${ACCOUNT_ID}', 'Partial', 'oauth', '{pull,push}', false, '{{calendar_name}}', true, false, false, false, false, false),
+      ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'mapped-user', '${ACCOUNT_ID}', 'Personal', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd', 'mapped-user', '${ACCOUNT_ID}', 'Family', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'idle-user', '22222222-2222-4222-8222-222222222222', 'Unmapped', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, true, false, false),
+      ('e1000000-0000-4000-8000-000000000001', 'mapped-user', '${ACCOUNT_ID}', 'MeshA', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('e1000000-0000-4000-8000-000000000002', 'mapped-user', '${ACCOUNT_ID}', 'MeshB', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('e1000000-0000-4000-8000-000000000003', 'mapped-user', '${ACCOUNT_ID}', 'MeshC', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('e1000000-0000-4000-8000-000000000004', 'mapped-user', '${ACCOUNT_ID}', 'Extra', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('f1000000-0000-4000-8000-000000000001', 'mapped-user', '${ACCOUNT_ID}', 'Mine', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('f1000000-0000-4000-8000-000000000002', 'mapped-user', '${ACCOUNT_ID}', 'Theirs', 'oauth', '{pull,push}', false, '{{calendar_name}}', false, false, false, false, false, false),
+      ('a1000000-0000-4000-8000-000000000001', 'mapped-user', '${ACCOUNT_ID}', 'ChainA', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('a1000000-0000-4000-8000-000000000002', 'mapped-user', '${ACCOUNT_ID}', 'ChainB', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('a1000000-0000-4000-8000-000000000003', 'mapped-user', '${ACCOUNT_ID}', 'ChainC', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('b1000000-0000-4000-8000-000000000001', 'mapped-user', '${ACCOUNT_ID}', 'Roomy', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, false, false, false, false, true),
+      ('b1000000-0000-4000-8000-000000000002', 'mapped-user', '${ACCOUNT_ID}', 'Echo', 'oauth', '{pull,push}', true, '{{event_name}} (away)', true, true, false, false, false, false),
+      ('b1000000-0000-4000-8000-000000000003', 'mapped-user', '${ACCOUNT_ID}', 'Calendar', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false),
+      ('b1000000-0000-4000-8000-000000000004', 'mapped-user', '${SECOND_ACCOUNT_ID}', 'Calendar', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false)
   `);
   await client.query(`
     INSERT INTO "source_destination_mappings" ("sourceCalendarId", "destinationCalendarId") VALUES
@@ -175,7 +185,11 @@ const seedCalendars = async (client: Client): Promise<void> => {
       ('a1000000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000002'),
       ('a1000000-0000-4000-8000-000000000002', 'a1000000-0000-4000-8000-000000000001'),
       ('a1000000-0000-4000-8000-000000000002', 'a1000000-0000-4000-8000-000000000003'),
-      ('a1000000-0000-4000-8000-000000000003', 'a1000000-0000-4000-8000-000000000002')
+      ('a1000000-0000-4000-8000-000000000003', 'a1000000-0000-4000-8000-000000000002'),
+      ('b1000000-0000-4000-8000-000000000001', 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd'),
+      ('b1000000-0000-4000-8000-000000000002', 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd'),
+      ('b1000000-0000-4000-8000-000000000003', 'b1000000-0000-4000-8000-000000000004'),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
   `);
 };
 
@@ -190,6 +204,7 @@ const readSyncs = async (client: Client): Promise<SyncRow[]> => {
     SELECT
       s."name", s."mode", s."shareAs", s."busyTitle", s."markPrivate",
       s."skipAllDay", s."skipFocusTime", s."skipOutOfOffice",
+      (SELECT jsonb_agg(rule - 'id') FROM jsonb_array_elements(s."rules") rule) AS "earlier",
       string_agg(c."name" || ':' || sc."role", ',' ORDER BY sc."role" DESC, sc."position") AS "calendars"
     FROM "syncs" s
     INNER JOIN "sync_calendars" sc ON sc."syncId" = s."id"
@@ -228,18 +243,47 @@ const replaySyncsMigration = async (client: Client): Promise<void> => {
   }
 };
 
-const busy = { busyTitle: null, markPrivate: false, mode: "one_way", shareAs: "busy_only", skipAllDay: false, skipFocusTime: false, skipOutOfOffice: false };
+const busy = { busyTitle: null, earlier: null, markPrivate: false, mode: "one_way", shareAs: "busy_only", skipAllDay: false, skipFocusTime: false, skipOutOfOffice: false };
+
+const everyEvent = (actions: unknown[]) => [{
+  actions,
+  conditions: [{ kind: "all_day" }, { kind: "timed" }],
+  match: "any",
+  name: "Kept from earlier settings",
+}];
 
 const EXPECTED_SYNCS: SyncRow[] = [
+  { ...busy, calendars: "Calendar:source,Calendar:destination", name: "Calendar (google) → Calendar (other@keeper.test)" },
   { ...busy, calendars: "ChainA:member,ChainB:member", mode: "both_ways", name: "ChainA ↔ ChainB" },
   { ...busy, calendars: "ChainB:member,ChainC:member", mode: "both_ways", name: "ChainB ↔ ChainC" },
   { ...busy, calendars: "Custom:source,Personal:destination", markPrivate: true, name: "Custom → Personal", shareAs: "full", skipAllDay: true },
+  {
+    ...busy,
+    calendars: "Echo:source,Family:destination",
+    earlier: everyEvent([{ kind: "rename", template: "{{event_name}} (away)" }, { kind: "drop_description" }, { kind: "drop_location" }]),
+    name: "Echo → Family",
+    shareAs: "full",
+  },
   { ...busy, calendars: "Extra:member,MeshA:member", mode: "both_ways", name: "Extra ↔ MeshA" },
   { ...busy, calendars: "MeshA:source,Family:destination", name: "MeshA → Family" },
   { ...busy, calendars: "MeshA:member,MeshB:member,MeshC:member", mode: "both_ways", name: "MeshA ↔ MeshB ↔ MeshC" },
   { ...busy, calendars: "Mine:source,Theirs:destination", name: "Mine → Theirs" },
   { ...busy, busyTitle: "Taken", calendars: "Named:source,Family:destination", name: "Named → Family", skipFocusTime: true },
-  { ...busy, calendars: "Partial:source,Family:destination,Personal:destination", name: "Partial → Family, Personal", shareAs: "title_only" },
+  {
+    ...busy,
+    calendars: "Partial:source,Family:destination,Personal:destination",
+    earlier: everyEvent([{ kind: "drop_description" }]),
+    name: "Partial → Family, Personal",
+    shareAs: "full",
+  },
+  {
+    ...busy,
+    calendars: "Roomy:source,Family:destination",
+    earlier: everyEvent([{ kind: "rename", template: "{{calendar_name}}" }, { kind: "drop_description" }]),
+    name: "Roomy → Family",
+    shareAs: "full",
+    skipOutOfOffice: true,
+  },
   { ...busy, calendars: "School:source,Work:source,Personal:destination", name: "School, Work → Personal" },
   { ...busy, calendars: "Theirs:source,Mine:destination", name: "Theirs → Mine", shareAs: "full" },
 ];
@@ -247,11 +291,13 @@ const EXPECTED_SYNCS: SyncRow[] = [
 const MESH = "MeshA ↔ MeshB ↔ MeshC";
 
 const EXPECTED_PAIRS: PairRow[] = [
+  { destination: "Calendar", source: "Calendar", sync: "Calendar (google) → Calendar (other@keeper.test)" },
   { destination: "ChainB", source: "ChainA", sync: "ChainA ↔ ChainB" },
   { destination: "ChainA", source: "ChainB", sync: "ChainA ↔ ChainB" },
   { destination: "ChainC", source: "ChainB", sync: "ChainB ↔ ChainC" },
   { destination: "ChainB", source: "ChainC", sync: "ChainB ↔ ChainC" },
   { destination: "Personal", source: "Custom", sync: "Custom → Personal" },
+  { destination: "Family", source: "Echo", sync: "Echo → Family" },
   { destination: "MeshA", source: "Extra", sync: "Extra ↔ MeshA" },
   { destination: "Extra", source: "MeshA", sync: "Extra ↔ MeshA" },
   { destination: "Family", source: "MeshA", sync: "MeshA → Family" },
@@ -265,6 +311,7 @@ const EXPECTED_PAIRS: PairRow[] = [
   { destination: "Family", source: "Named", sync: "Named → Family" },
   { destination: "Family", source: "Partial", sync: "Partial → Family, Personal" },
   { destination: "Personal", source: "Partial", sync: "Partial → Family, Personal" },
+  { destination: "Family", source: "Roomy", sync: "Roomy → Family" },
   { destination: "Personal", source: "School", sync: "School, Work → Personal" },
   { destination: "Mine", source: "Theirs", sync: "Theirs → Mine" },
   { destination: "Personal", source: "Work", sync: "School, Work → Personal" },
@@ -298,19 +345,42 @@ describe("syncs backfill", () => {
     await runMigrationRunner(databaseUrl);
 
     await withConnection(databaseUrl, async (client) => {
+      // Main replaces a source's destinations by deleting them all and inserting the ones it keeps, in one transaction.
+      await client.query("BEGIN");
       await client.query(`DELETE FROM "source_destination_mappings" WHERE "sourceCalendarId" = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'`);
+      await client.query(`DELETE FROM "source_destination_mappings" WHERE "sourceCalendarId" = 'e1000000-0000-4000-8000-000000000002'`);
       await client.query(`
         INSERT INTO "source_destination_mappings" ("sourceCalendarId", "destinationCalendarId") VALUES
           ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
+          ('e1000000-0000-4000-8000-000000000002', 'e1000000-0000-4000-8000-000000000001'),
+          ('e1000000-0000-4000-8000-000000000002', 'e1000000-0000-4000-8000-000000000003'),
           ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd')
       `);
+      await client.query("COMMIT");
 
       expect(await readPairs(client)).toEqual(expect.arrayContaining([
         { destination: "Personal", source: "Work", sync: "School, Work → Personal" },
+        { destination: "MeshA", source: "MeshB", sync: MESH },
         { destination: "Family", source: "Custom", sync: "Custom → Family" },
       ]));
       expect(await readSyncs(client)).toEqual(expect.arrayContaining([
         { ...busy, calendars: "Custom:source,Family:destination", markPrivate: true, name: "Custom → Family", shareAs: "full", skipAllDay: true },
+        { ...busy, calendars: "School:source,Work:source,Personal:destination", name: "School, Work → Personal" },
+        { ...busy, calendars: "MeshA:member,MeshB:member,MeshC:member", mode: "both_ways", name: MESH },
+      ]));
+
+      // Unchecking a destination in main's UI takes the source out of the sync, so a later edit can't restore it.
+      await client.query(`
+        DELETE FROM "source_destination_mappings"
+        WHERE "sourceCalendarId" = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' AND "destinationCalendarId" = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+      `);
+      await client.query(`INSERT INTO "source_destination_mappings" ("sourceCalendarId", "destinationCalendarId") VALUES ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc')`);
+
+      expect(await readSyncs(client)).toEqual(expect.arrayContaining([
+        { ...busy, calendars: "School:source,Personal:destination", name: "School, Work → Personal" },
+      ]));
+      expect(await readPairs(client)).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ destination: "Personal", source: "Personal" }),
       ]));
     });
   });

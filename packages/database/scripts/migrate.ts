@@ -477,6 +477,10 @@ try {
     await installEventMappingConstraints();
     await validateEventMappingConstraints();
   }
+
+  if (!(await isPostMigrationRuntimeReady())) {
+    throw new Error("Migrations finished but the database is not ready: a journal entry may have been skipped");
+  }
 } finally {
   // PostgreSQL releases the session-level migration lock when this client closes.
   await connection.end();

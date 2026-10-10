@@ -1,6 +1,7 @@
 import {
   boolean,
   check,
+  date,
   index,
   integer,
   jsonb,
@@ -19,7 +20,7 @@ import {
   DEFAULT_HISTORIC_SYNC_RANGE,
   SYNC_RANGE_DEFINITIONS,
 } from "@keeper.sh/data-schemas";
-import type { AdvancedRule } from "@keeper.sh/data-schemas";
+import type { AdvancedRule, SyncRunRecord } from "@keeper.sh/data-schemas";
 import { user } from "./auth-schema";
 
 const DEFAULT_EVENT_COUNT = 0;
@@ -479,6 +480,20 @@ const syncActivityTable = pgTable(
   ],
 );
 
+// One row per sync per UTC day, so the weekly digest reads totals instead of every run.
+const syncActivityDaysTable = pgTable(
+  "sync_activity_days",
+  {
+    added: integer().notNull().default(0),
+    day: date({ mode: "string" }).notNull(),
+    removed: integer().notNull().default(0),
+    syncId: uuid()
+      .notNull()
+      .references(() => syncsTable.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.syncId, table.day] })],
+);
+
 // Pairs are derived from each sync's calendars; the unique pair index keeps a pair in one sync.
 const sourceDestinationMappingsTable = pgTable(
   "source_destination_mappings",
@@ -488,8 +503,11 @@ const sourceDestinationMappingsTable = pgTable(
     destinationCalendarId: uuid()
       .notNull()
       .references(() => calendarsTable.id, { onDelete: "cascade" }),
+    failedCount: integer().notNull().default(0),
     id: uuid().notNull().primaryKey().defaultRandom(),
+    lastErrorAt: timestamp({ withTimezone: true }),
     lastSyncedAt: timestamp({ withTimezone: true }),
+    skippedBy: jsonb().$type<SyncRunRecord["skippedBy"]>().notNull().default([]),
     skippedCount: integer().notNull().default(0),
     sourceCalendarId: uuid()
       .notNull()
@@ -632,6 +650,7 @@ export {
   icalFeedsTable,
   oauthCredentialsTable,
   sourceDestinationMappingsTable,
+  syncActivityDaysTable,
   syncActivityTable,
   syncCalendarsTable,
   syncStatusTable,

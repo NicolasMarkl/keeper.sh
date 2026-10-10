@@ -2346,6 +2346,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "failedCount": {
+          "name": "failedCount",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "id": {
           "name": "id",
           "type": "uuid",
@@ -2353,11 +2360,24 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
+        "lastErrorAt": {
+          "name": "lastErrorAt",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "lastSyncedAt": {
           "name": "lastSyncedAt",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "skippedBy": {
+          "name": "skippedBy",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "skippedCount": {
           "name": "skippedCount",
@@ -2584,6 +2604,67 @@
           "value": "\"sync_activity\".\"kind\" IN ('change', 'run')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.sync_activity_days": {
+      "name": "sync_activity_days",
+      "schema": "",
+      "columns": {
+        "added": {
+          "name": "added",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "day": {
+          "name": "day",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "removed": {
+          "name": "removed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "syncId": {
+          "name": "syncId",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "sync_activity_days_syncId_syncs_id_fk": {
+          "name": "sync_activity_days_syncId_syncs_id_fk",
+          "tableFrom": "sync_activity_days",
+          "tableTo": "syncs",
+          "columnsFrom": [
+            "syncId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "sync_activity_days_syncId_day_pk": {
+          "name": "sync_activity_days_syncId_day_pk",
+          "columns": [
+            "syncId",
+            "day"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.sync_calendars": {
