@@ -90,22 +90,33 @@ const createTestAuth = async ({
 
 type TestAuth = Awaited<ReturnType<typeof createTestAuth>>;
 
-const signInWithOidc = async (
-  auth: TestAuth["auth"],
-  profile: { email: string; email_verified?: boolean; name?: string; sub: string },
-) => {
+interface OidcClaims {
+  email: string;
+  sub: string;
+  [claim: string]: unknown;
+}
+
+const signInWithOidc = async (auth: TestAuth["auth"], claims: OidcClaims) => {
   const context = await auth.$context;
+  const decoded = {
+    emailVerified: claims.email_verified,
+    id: claims.sub,
+    image: claims.picture,
+    ...claims,
+  };
+  const mapped = mapOidcProfileToUser(decoded);
   const userInfo = {
-    email: profile.email,
-    id: profile.sub,
-    name: profile.name ?? "",
-    ...mapOidcProfileToUser(profile),
+    ...decoded,
+    ...mapped,
+    email: claims.email.toLowerCase(),
+    id: claims.sub,
+    name: mapped.name ?? "",
   };
 
   return handleOAuthUserInfo({ context } as never, {
     account: {
       accessToken: "test-access-token",
-      accountId: profile.sub,
+      accountId: claims.sub,
       providerId: "oidc",
     },
     userInfo,
@@ -242,6 +253,83 @@ describe("an OIDC sign-in", () => {
     expect(
       await database.select().from(userTable).where(eq(userTable.email, "future-admin@local")),
     ).toEqual([]);
+  });
+});
+
+describe("an OIDC identity carrying another user's identifiers", () => {
+  const registerLocalUser = async (auth: TestAuth["auth"], username: string) => {
+    const response = await postJson(auth, "/username-only/sign-up", {
+      password: "a-long-enough-password",
+      username,
+    });
+    expect(response.status).toBe(200);
+    const body: { user: { id: string } } = await response.json();
+    return body.user.id;
+  };
+
+  it("does not claim a local user's username through username or preferred_username claims", async () => {
+    const { auth, database } = await createTestAuth();
+    const localUserId = await registerLocalUser(auth, "admin");
+
+    const result = await signInWithOidc(auth, {
+      email: "attacker@example.com",
+      email_verified: true,
+      name: "Attacker",
+      preferred_username: "admin",
+      sub: "attacker-subject",
+      username: "admin",
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.data?.user.id).not.toBe(localUserId);
+    const [created] = await database
+      .select()
+      .from(userTable)
+      .where(eq(userTable.email, "attacker@example.com"));
+    expect(created?.username).toBeNull();
+    const [local] = await database.select().from(userTable).where(eq(userTable.id, localUserId));
+    expect(local?.username).toBe("admin");
+    expect(local?.email).toBe("admin@local");
+    expect(await readAccountProviders(database, localUserId)).toEqual(["credential"]);
+  });
+
+  it("is not linked to an existing account by a raw emailVerified claim", async () => {
+    const { auth, database } = await createTestAuth();
+    await seedUser(database, { email: "existing@example.com", id: "existing-user" });
+
+    const result = await signInWithOidc(auth, {
+      email: "Existing@Example.com",
+      emailVerified: true,
+      email_verified: true,
+      sub: "spoofing-subject",
+    });
+
+    expect(result.error).toBe("account not linked");
+    expect(await readAccountProviders(database, "existing-user")).toEqual([]);
+  });
+
+  it("does not overwrite the profile of the account it signs in to", async () => {
+    const { auth, database } = await createTestAuth();
+    const first = await signInWithOidc(auth, {
+      email: "person@example.com",
+      name: "Person",
+      sub: "person-subject",
+    });
+    const userId = first.data?.user.id;
+    expect(userId).toBeDefined();
+
+    const second = await signInWithOidc(auth, {
+      email: "person@example.com",
+      name: "Someone Else",
+      preferred_username: "admin",
+      sub: "person-subject",
+      username: "admin",
+    });
+
+    expect(second.data?.user.id).toBe(userId);
+    const [row] = await database.select().from(userTable).where(eq(userTable.email, "person@example.com"));
+    expect(row?.name).toBe("Person");
+    expect(row?.username).toBeNull();
   });
 });
 
