@@ -130,6 +130,11 @@ const readPairs = (database: DatabaseInstance, fixture: Fixture) => rows<PairRow
   FROM "source_destination_mappings" WHERE "destinationCalendarId" = ${fixture.family} ORDER BY "sourceCalendarId"
 `);
 
+const pairCounts = (pairs: PairRow[]) => pairs.map(({ copiedCount, failedCount, lastErrorAt, skippedBy, skippedCount, sourceCalendarId }) => ({
+  copiedCount, failedCount, lastErrorAt, skippedBy, skippedCount, sourceCalendarId,
+}));
+const pairStamps = (pairs: PairRow[]) => pairs.map((pair) => new Date(pair.lastSyncedAt ?? 0).getTime());
+
 describe.skipIf(!ADMIN_DATABASE_URL)("sync run recording against Postgres", () => {
   let connection: DatabaseInstance | null = null;
   const connected = (): DatabaseInstance => {
@@ -185,7 +190,7 @@ describe.skipIf(!ADMIN_DATABASE_URL)("sync run recording against Postgres", () =
     expect(pairs.every((pair) => pair.lastSyncedAt !== null)).toBe(true);
   });
 
-  it("leaves rows alone when nothing changed", async () => {
+  it("only moves lastSyncedAt forward and logs nothing when nothing changed", async () => {
     const database = connected();
     const fixture = await seed(database);
     await recordSyncRun(database, runInput(fixture));
@@ -193,7 +198,9 @@ describe.skipIf(!ADMIN_DATABASE_URL)("sync run recording against Postgres", () =
 
     await recordSyncRun(database, runInput(fixture));
 
-    expect(await readPairs(database, fixture)).toEqual(before);
+    const after = await readPairs(database, fixture);
+    expect(pairCounts(after)).toEqual(pairCounts(before));
+    expect(pairStamps(after).every((stamp, index) => stamp > (pairStamps(before)[index] ?? 0))).toBe(true);
     expect(await readRuns(database, fixture.workSync)).toEqual([]);
   });
 

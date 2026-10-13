@@ -113,7 +113,7 @@ describe("planSyncRun", () => {
     expect(plan.pairUpdates).toEqual([]);
   });
 
-  it("skips pairs that didn't change and were stamped recently", () => {
+  it("stamps a read pair's lastSyncedAt every run, even when nothing else changed", () => {
     const recent = new Date(NOW.getTime() - MINUTE_MS);
     const plan = planSyncRun(
       [pair({ copiedCount: 7, lastSyncedAt: recent, sourceCalendarId: "work", syncId: "work-sync" })],
@@ -121,18 +121,7 @@ describe("planSyncRun", () => {
       NOW,
     );
 
-    expect(plan.pairUpdates).toEqual([]);
-  });
-
-  it("refreshes a quiet pair's lastSyncedAt once it is a few minutes old", () => {
-    const old = new Date(NOW.getTime() - 10 * MINUTE_MS);
-    const plan = planSyncRun(
-      [pair({ copiedCount: 7, lastSyncedAt: old, sourceCalendarId: "work", syncId: "work-sync" })],
-      input({ sourceOutcomes: { work: { copied: 7, skipped: 0, skippedBy: {} } } }),
-      NOW,
-    );
-
-    expect(plan.pairUpdates).toMatchObject([{ id: "pair-work", lastSyncedAt: NOW }]);
+    expect(plan.pairUpdates).toMatchObject([{ copiedCount: 7, id: "pair-work", lastSyncedAt: NOW }]);
   });
 
   it("leaves paused syncs out entirely", () => {

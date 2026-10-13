@@ -11,8 +11,6 @@ import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 
 const SYNC_RUN_RETENTION = 200;
 const SYNC_ACTIVITY_DAY_RETENTION = 30;
-// A quiet pair's lastSyncedAt is refreshed this often rather than on every one-minute run.
-const PAIR_SYNCED_AT_REFRESH_MS = 5 * 60 * 1000;
 
 type SkippedBy = SyncRunRecord["skippedBy"];
 type RecordingClient = Pick<BunSQLDatabase, "execute" | "insert" | "update">;
@@ -122,21 +120,14 @@ const resolvePairStatus = (
   };
 };
 
-const needsPairWrite = (pair: DestinationPair, status: PairStatus, syncedAt: Date): boolean => {
-  if (
-    pair.copiedCount !== status.copiedCount
-    || pair.skippedCount !== status.skippedCount
-    || pair.failedCount !== status.failedCount
-    || pair.lastErrorAt !== null
-    || !isSameSkippedBy(pair.skippedBy, status.skippedBy)
-  ) {
-    return true;
-  }
-  if (status.lastSyncedAt === pair.lastSyncedAt) {
-    return false;
-  }
-  return !pair.lastSyncedAt || syncedAt.getTime() - pair.lastSyncedAt.getTime() >= PAIR_SYNCED_AT_REFRESH_MS;
-};
+// A pair whose source was read is stamped every run, so lastSyncedAt is exact; an unread one is written only if it changed.
+const needsPairWrite = (pair: DestinationPair, status: PairStatus): boolean =>
+  status.lastSyncedAt !== pair.lastSyncedAt
+  || pair.copiedCount !== status.copiedCount
+  || pair.skippedCount !== status.skippedCount
+  || pair.failedCount !== status.failedCount
+  || pair.lastErrorAt !== null
+  || !isSameSkippedBy(pair.skippedBy, status.skippedBy);
 
 const planSyncRun = (
   pairs: readonly DestinationPair[],
@@ -150,7 +141,7 @@ const planSyncRun = (
       continue;
     }
     const status = resolvePairStatus(pair, input, syncedAt);
-    if (needsPairWrite(pair, status, syncedAt)) {
+    if (needsPairWrite(pair, status)) {
       pairUpdates.push({ ...status, id: pair.id });
     }
     const syncPairs = pairsBySyncId.get(pair.syncId) ?? [];
