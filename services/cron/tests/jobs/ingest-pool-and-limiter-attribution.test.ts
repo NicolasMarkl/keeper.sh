@@ -51,6 +51,7 @@ const STORED_INGEST_SEQ = 0;
 const baseSource = {
   accessToken: "access-token",
   accountId: "account-1",
+  excludeAvailabilities: [],
   expiresAt: new Date(Date.now() + 3_600_000),
   ingestFutureRange: "P90D",
   ingestHistoricRange: "P30D",

@@ -663,8 +663,36 @@
     {
       "idx": 94,
       "version": "7",
-      "when": 1789924337771,
-      "tag": "0094_add_calendar_and_event_colors",
+      "when": 1791822336241,
+      "tag": "0094_rapid_lifeguard",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1791906001909,
+      "tag": "0095_mark_existing_oauth_clients_legacy",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1791915609113,
+      "tag": "0096_complex_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1791915616003,
+      "tag": "0097_tough_morbius",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1791922782826,
+      "tag": "0098_add_calendar_and_event_colors",
       "breakpoints": true
     }
   ]

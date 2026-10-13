@@ -16,9 +16,11 @@ import { authClient } from "@/lib/auth-client";
 import {
   getEnabledSocialProviders,
   resolveCredentialField,
+  resolveOidcProviderName,
   type AuthCapabilities,
 } from "@/lib/auth-capabilities";
 import { signInWithCredential, signUpWithCredential } from "@/lib/auth";
+import { withSignupMarker } from "@/lib/signup-marker";
 import { track, ANALYTICS_EVENTS, reportSignupConversion } from "@/lib/analytics";
 import { getPublicRuntimeConfig } from "@/lib/runtime-config";
 import {
@@ -107,6 +109,7 @@ export function AuthForm({
   const hasSocialProviders = getEnabledSocialProviders(capabilities).length > 0;
   const switchSearch = resolveSwitchSearch(authorizationSearch);
   const switchHref = resolvePathWithSearch(copy.switchTo, switchSearch);
+  const hideCredentialForm = capabilities.disableLocalAuth === true;
 
   return (
     <>
@@ -124,23 +127,27 @@ export function AuthForm({
             oauthActionLabel={copy.oauthActionLabel}
             authorizationSearch={authorizationSearch}
           />
-          <Divider>or</Divider>
+          {!hideCredentialForm && <Divider>or</Divider>}
         </>
       )}
-      <CredentialForm
-        capabilities={capabilities}
-        submitLabel={copy.submitLabel}
-        action={copy.action}
-        authorizationSearch={authorizationSearch}
-      />
+      {!hideCredentialForm && (
+        <CredentialForm
+          capabilities={capabilities}
+          submitLabel={copy.submitLabel}
+          action={copy.action}
+          authorizationSearch={authorizationSearch}
+        />
+      )}
       <div className="flex flex-col gap-1.5">
         <AuthError />
-        <AuthSwitchPrompt>
-          {copy.switchPrompt}{" "}
-          <ExternalTextLink href={switchHref}>
-            {copy.switchCta}
-          </ExternalTextLink>
-        </AuthSwitchPrompt>
+        {!hideCredentialForm && (
+          <AuthSwitchPrompt>
+            {copy.switchPrompt}{" "}
+            <ExternalTextLink href={switchHref}>
+              {copy.switchCta}
+            </ExternalTextLink>
+          </AuthSwitchPrompt>
+        )}
       </div>
     </>
   );
@@ -213,8 +220,9 @@ function SocialAuthButtons({
   const enabledSocialProviders = new Set(getEnabledSocialProviders(capabilities));
   const visibleProviders = SOCIAL_AUTH_PROVIDERS.filter((provider) =>
     enabledSocialProviders.has(provider.id));
+  const showOidc = enabledSocialProviders.has("oidc");
 
-  if (visibleProviders.length === 0) {
+  if (visibleProviders.length === 0 && !showOidc) {
     return null;
   }
 
@@ -233,7 +241,67 @@ function SocialAuthButtons({
           <ButtonText>{`${oauthActionLabel} with ${provider.label}`}</ButtonText>
         </ExternalLinkButton>
       ))}
+      {showOidc && (
+        <OidcSignInButton
+          actionLabel={oauthActionLabel}
+          providerName={resolveOidcProviderName(capabilities)}
+          authorizationSearch={authorizationSearch}
+        />
+      )}
     </>
+  );
+}
+
+function OidcSignInButton({
+  actionLabel,
+  providerName,
+  authorizationSearch,
+}: {
+  actionLabel: string;
+  providerName: string;
+  authorizationSearch?: StringSearchParams;
+}) {
+  const status = useAtomValue(authFormStatusAtom);
+  const setStatus = useSetAtom(authFormStatusAtom);
+  const setError = useSetAtom(authFormErrorAtom);
+
+  const showError = (message: string) => {
+    setStatus("idle");
+    setError({ message, active: true });
+  };
+
+  const handleClick = async () => {
+    setError(null);
+    setStatus("loading");
+
+    const callbackURL = resolveClientPostAuthRedirect(authorizationSearch);
+    const fallbackMessage = `Couldn't reach ${providerName}.`;
+
+    try {
+      const { error } = await authClient.signIn.oauth2({
+        callbackURL,
+        newUserCallbackURL: withSignupMarker(callbackURL, globalThis.location.origin),
+        providerId: "oidc",
+      });
+
+      if (error) {
+        showError(error.message ?? fallbackMessage);
+      }
+    } catch (error) {
+      showError(resolveErrorMessage(error, fallbackMessage));
+    }
+  };
+
+  return (
+    <Button
+      type="button"
+      onClick={handleClick}
+      disabled={status === "loading"}
+      className="w-full justify-center"
+      variant="border"
+    >
+      <ButtonText>{`${actionLabel} with ${providerName}`}</ButtonText>
+    </Button>
   );
 }
 

@@ -81,6 +81,16 @@ const getEventAvailability = (event: IcsEvent) => {
   return null;
 };
 
+const TENTATIVE_STATUS = "TENTATIVE";
+
+const isTentativeEvent = (event: IcsEvent): boolean => {
+  const busyStatus: unknown = event.nonStandard?.busyStatus;
+  if (typeof busyStatus === "string") {
+    return busyStatus.toUpperCase() === TENTATIVE_STATUS;
+  }
+  return event.status === TENTATIVE_STATUS;
+};
+
 const buildRecurrenceIdentity = (uid: string, recurrenceDate: Date): string =>
   `${uid}|${recurrenceDate.toISOString()}`;
 
@@ -381,6 +391,7 @@ const convertCanonicalEvent = (
     location: event.location,
     ...(recurrenceDuration && { recurrenceDuration }),
     recurrenceRule: event.recurrenceRule,
+    ...isTentativeEvent(event) && { sourceEventType: "tentative" as const },
     startTime,
     startTimeZone: getEventStartTimeZone(event),
     title: event.summary,

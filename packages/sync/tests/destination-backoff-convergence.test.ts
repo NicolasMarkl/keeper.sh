@@ -535,10 +535,13 @@ describe("a run whose only push was accepted without a remote id", () => {
     expect(shouldExcludeSyncEvent({
       availability: "workingElsewhere",
       excludeAllDayEvents: false,
+      excludeAvailabilities: [],
       excludeFocusTime: false,
       excludeOutOfOffice: false,
+      excludeTitleKeywords: [],
       isAllDay: false,
       sourceEventType: null,
+      title: null,
     })).toBe(true);
   });
 

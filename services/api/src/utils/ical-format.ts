@@ -230,11 +230,14 @@ const shouldIncludeEvent = (event: CalendarEvent, settings: FeedSettings): boole
   }
   return !shouldExcludeSyncEvent({
     excludeAllDayEvents: false,
+    excludeAvailabilities: [],
     excludeFocusTime: settings.excludeFocusTime,
     excludeOutOfOffice: settings.excludeOutOfOffice,
+    excludeTitleKeywords: [],
     availability: event.availability,
     isAllDay: event.isAllDay,
     sourceEventType: event.sourceEventType ?? null,
+    title: null,
   });
 };
 

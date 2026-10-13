@@ -747,6 +747,7 @@ const hasSourceAuthorityChanged = (
 interface OAuthFetcherParams {
   accessToken: string;
   calendarId: string;
+  excludesTentative: boolean;
   externalCalendarId: string;
   syncToken: string | null;
   rateLimiter?: RedisRateLimiter;
@@ -1331,6 +1332,7 @@ const ingestOAuthSources = async (
                   .select({
                     accountId: calendarAccountsTable.id,
                     accessToken: oauthCredentialsTable.accessToken,
+                    excludeAvailabilities: calendarsTable.excludeAvailabilities,
                     expiresAt: oauthCredentialsTable.expiresAt,
                     externalCalendarId: calendarsTable.externalCalendarId,
                     failureCount: calendarsTable.ingestFailureCount,
@@ -1409,6 +1411,7 @@ const ingestOAuthSources = async (
                 const fetcher = resolveOAuthFetcher(currentSource.provider, {
                   accessToken: tokenState.accessToken,
                   calendarId: source.calendarId,
+                  excludesTentative: currentSource.excludeAvailabilities.includes("tentative"),
                   externalCalendarId: currentSource.externalCalendarId,
                   syncToken: ingestionState.syncToken,
                   rateLimiter,

@@ -1,6 +1,6 @@
 import { type } from "arktype";
 import { betterAuth } from "better-auth";
-import { createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { signJWT } from "better-auth/crypto";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { jwt as jwtPlugin } from "better-auth/plugins";
@@ -14,6 +14,9 @@ import { usernameOnly } from "./plugins/username-only";
 import { deletePolarCustomerByExternalId } from "./polar-customer-delete";
 import { writeAuthStderr } from "./runtime-environment";
 import { resolveAuthCapabilities } from "./capabilities";
+import { createOidcPlugin, isLocalAccountEmail, isLocalAuthPath } from "./oidc";
+import { readMcpTokenVersion } from "./mcp-token-version";
+import type { McpTokenVersion } from "./mcp-token-version";
 import {
   createUnverifiedRegistrationReclaim,
   readSignUpBody,
@@ -58,6 +61,12 @@ interface AuthConfig {
   googleClientSecret?: string;
   microsoftClientId?: string;
   microsoftClientSecret?: string;
+  oidcIssuerUrl?: string;
+  oidcClientId?: string;
+  oidcClientSecret?: string;
+  oidcProviderName?: string;
+  oidcScopes?: string[] | null;
+  disableLocalAuth?: boolean;
   resendApiKey?: string;
   passkeyRpId?: string;
   passkeyRpName?: string;
@@ -69,6 +78,7 @@ interface AuthConfig {
 
 interface KeeperMcpAuthSession {
   scopes: string;
+  tokenVersion: McpTokenVersion;
   userId: string | null;
 }
 
@@ -107,10 +117,31 @@ const hasOAuthProviderApi = (
 };
 
 const mcpJwtClaimsSchema = type({
+  "keeper_token_version?": "number",
   scope: "string",
   sub: "string",
   "+": "delete",
 });
+
+const MICROSOFT_CONSUMER_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad";
+
+interface MicrosoftEmailOwnershipClaims {
+  email_verified?: boolean;
+  tid?: string;
+  xms_edov?: boolean;
+}
+
+const isMicrosoftEmailOwnershipEstablished = (
+  profile: MicrosoftEmailOwnershipClaims,
+): boolean => {
+  if (typeof profile.email_verified === "boolean") {
+    return false;
+  }
+  if (profile.xms_edov === true) {
+    return true;
+  }
+  return profile.tid === MICROSOFT_CONSUMER_TENANT_ID;
+};
 
 const AUTH_BASE_PATH = "/api/auth";
 const EMAIL_VERIFICATION_EXPIRES_IN_SECONDS = 3600;
@@ -127,6 +158,12 @@ const createAuth = (config: AuthConfig) => {
     googleClientSecret,
     microsoftClientId,
     microsoftClientSecret,
+    oidcIssuerUrl,
+    oidcClientId,
+    oidcClientSecret,
+    oidcProviderName,
+    oidcScopes,
+    disableLocalAuth,
     resendApiKey,
     passkeyRpId,
     passkeyRpName,
@@ -150,6 +187,11 @@ const createAuth = (config: AuthConfig) => {
     googleClientSecret,
     microsoftClientId,
     microsoftClientSecret,
+    oidcIssuerUrl,
+    oidcClientId,
+    oidcClientSecret,
+    oidcProviderName,
+    disableLocalAuth,
     passkeyOrigin,
     passkeyRpId,
   });
@@ -232,9 +274,12 @@ const createAuth = (config: AuthConfig) => {
     socialProviders.microsoft = {
       clientId: microsoftClientId,
       clientSecret: microsoftClientSecret,
-      mapProfileToUser: (profile) => ({
-        emailVerified: profile.email_verified ?? true,
-      }),
+      mapProfileToUser: (profile) => {
+        if (isMicrosoftEmailOwnershipEstablished(profile)) {
+          return { emailVerified: true };
+        }
+        return {};
+      },
       prompt: "consent",
       scope: ["offline_access", "User.Read", "Calendars.ReadWrite", "MailboxSettings.Read"],
     };
@@ -269,6 +314,21 @@ const createAuth = (config: AuthConfig) => {
       user,
     });
   };
+
+  const oidcEnabled = capabilities.socialProviders.oidc === true;
+
+  if (oidcEnabled && oidcIssuerUrl && oidcClientId && oidcClientSecret) {
+    plugins.push(
+      createOidcPlugin({
+        clientId: oidcClientId,
+        clientSecret: oidcClientSecret,
+        issuerUrl: oidcIssuerUrl,
+        scopes: oidcScopes,
+      }),
+    );
+  }
+
+  const localAuthDisabled = capabilities.disableLocalAuth === true;
 
   const auth = betterAuth({
     account: {
@@ -335,8 +395,27 @@ const createAuth = (config: AuthConfig) => {
       autoSignInAfterVerification: true,
       sendVerificationEmail,
     },
+    databaseHooks: {
+      user: {
+        create: {
+          before: (user) => {
+            if (oidcEnabled && isLocalAccountEmail(user.email)) {
+              return Promise.resolve(false);
+            }
+            return Promise.resolve();
+          },
+        },
+      },
+    },
     hooks: {
-      before: createAuthMiddleware(() => Promise.resolve()),
+      before: createAuthMiddleware((context) => {
+        if (localAuthDisabled && isLocalAuthPath(context.path)) {
+          throw new APIError("FORBIDDEN", {
+            message: "Local authentication is disabled",
+          });
+        }
+        return Promise.resolve();
+      }),
     },
     onAPIError: {
       onError(error: unknown) {
@@ -424,6 +503,7 @@ const createAuth = (config: AuthConfig) => {
 
         return {
           scopes: claims.scope,
+          tokenVersion: readMcpTokenVersion(claims.keeper_token_version),
           userId: claims.sub,
         };
       },
@@ -470,11 +550,18 @@ export {
   KEEPER_API_SCOPES,
   KEEPER_API_SOURCE_SCOPE,
   KEEPER_API_SYNC_SCOPE,
+  KEEPER_API_WRITE_SCOPE,
 } from "./mcp-config";
+export {
+  CURRENT_MCP_TOKEN_VERSION,
+  LEGACY_MCP_TOKEN_VERSION,
+  resolveMissingMcpScope,
+} from "./mcp-token-version";
 export type {
   AuthConfig,
   AuthResult,
   KeeperMcpAuthApi,
   KeeperMcpAuthSession,
   KeeperMcpEnabledAuth,
+  McpTokenVersion,
 };

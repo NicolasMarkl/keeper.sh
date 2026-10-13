@@ -25,7 +25,7 @@ interface KeeperToolContext {
 
 interface KeeperMcpToolAnnotations {
   readOnlyHint: boolean;
-  destructiveHint?: boolean;
+  destructiveHint: boolean;
   openWorldHint: boolean;
 }
 
@@ -39,6 +39,7 @@ interface KeeperMcpToolDefinition<TResult> {
 
 const READ_ONLY: KeeperMcpToolAnnotations = {
   readOnlyHint: true,
+  destructiveHint: false,
   openWorldHint: false,
 };
 
