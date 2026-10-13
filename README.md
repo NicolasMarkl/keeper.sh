@@ -182,6 +182,12 @@ There are seven images currently available: two designed for convenience, and fi
 | GOOGLE_CLIENT_SECRET           | `api`, `cron`, `worker` | Optional. Required for Google Calendar integration.                                                                                                                 |
 | MICROSOFT_CLIENT_ID            | `api`, `cron`, `worker` | Optional. Required for Microsoft Outlook integration.                                                                                                               |
 | MICROSOFT_CLIENT_SECRET        | `api`, `cron`, `worker` | Optional. Required for Microsoft Outlook integration.                                                                                                               |
+| OIDC_ISSUER_URL                | `api`         | Optional. Issuer URL of an OIDC-compliant identity provider (Authentik, Keycloak, Pocket ID, ...), exactly as the provider publishes it. Discovery is read from `<issuer>/.well-known/openid-configuration`. Requires `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`.<br><br>e.g. `https://id.example.com` or `https://auth.example.com/realms/keeper`                                                                              |
+| OIDC_CLIENT_ID                 | `api`         | Optional. OAuth client ID registered with the OIDC issuer.                                                                                                           |
+| OIDC_CLIENT_SECRET             | `api`         | Optional. OAuth client secret registered with the OIDC issuer.                                                                                                       |
+| OIDC_PROVIDER_NAME             | `api`         | Optional. Display name shown on the SSO login button. Defaults to `SSO`.<br><br>e.g. `Pocket ID`                                                                      |
+| OIDC_SCOPES                    | `api`         | Optional. Comma-separated scopes to request from the OIDC issuer. Defaults to `openid,profile,email`.<br><br>e.g. `openid,profile,email,groups`                                                                                    |
+| DISABLE_LOCAL_AUTH             | `api`         | Optional. Set to `true` to turn off username and email/password sign-in and sign-up, so the OIDC provider is the only way in. Only takes effect when `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` are all set. |
 | POSTGRES_PASSWORD              | `standalone`  | Optional. Custom password for the internal PostgreSQL database in `keeper-standalone`. If unset, defaults to `keeper`. The database is not exposed outside the container, so this is low risk, but can be set for defense in depth. |
 | BLOCK_PRIVATE_RESOLUTION       | `api`, `cron`, `worker` | Optional. Set to `true` to block outbound fetches (ICS subscriptions, CalDAV servers) from resolving to private/reserved network addresses. Prevents SSRF. Defaults to `false` for backward compatibility with self-hosted setups that use local CalDAV/ICS servers. |
 | BLOCK_PRIVATE_RESOLUTION       | `api`, `cron` | Optional. Set to `true` to block outbound fetches (ICS subscriptions, CalDAV servers) from resolving to private/reserved network addresses. Prevents SSRF. Defaults to `false` for backward compatibility with self-hosted setups that use local CalDAV/ICS servers. |
@@ -256,6 +262,38 @@ Once this is configured, set the client ID and client secret as the `GOOGLE_CLIE
 The clearest non-legacy walkthrough for configuring OAuth is this [community thread.](https://learn.microsoft.com/en-us/answers/questions/4705805/how-to-set-up-oauth-2-0-for-outlook). The required scopes are `Calendars.ReadWrite`, `User.Read`, and `offline_access`. The client ID and secret for Microsoft go into the `MICROSOFT_CLIENT_ID` and `MICROSOFT_CLIENT_SECRET` environment variables respectively.
 
 If people will sign in with work or school (Entra ID) accounts, add the `xms_edov` optional claim to the app registration under **Token configuration → Add optional claim → ID → `xms_edov`**. Entra sets it when the tenant has verified the domain of the account's email, and Keeper.sh uses it to record that email as verified. Without it, a work or school sign-in is recorded as unverified and can't be linked automatically to an existing account with the same email; it can still be linked from settings while signed in. Personal Microsoft accounts don't need the claim.
+
+### OIDC / SSO
+
+Self-hosters can delegate sign-in to any OIDC-compliant identity provider (Authentik, Keycloak, Pocket ID, Zitadel, ...). Nothing changes until the variables below are set.
+
+Register a confidential client with your provider using this redirect URI:
+
+```
+https://<your-keeper-origin>/api/auth/oauth2/callback/oidc
+```
+
+Then pass the client to the container running the API (`keeper-standalone`, `keeper-services`, or `keeper-api`):
+
+```yaml
+    environment:
+      OIDC_ISSUER_URL: https://id.example.com
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_PROVIDER_NAME: Pocket ID
+```
+
+`OIDC_ISSUER_URL` must match the `issuer` your provider publishes, including any path, such as `https://auth.example.com/realms/keeper` for Keycloak or `https://authentik.example.com/application/o/keeper/` for Authentik. `OIDC_PROVIDER_NAME` labels the sign-in button and defaults to `SSO`. `OIDC_SCOPES` is a comma-separated list that defaults to `openid,profile,email`.
+
+Signing in with the provider for the first time creates a new Keeper.sh account. It is never merged into an existing account automatically, even when the email addresses match. To move an existing account to SSO, sign in the usual way and choose **Link SSO** in settings; from then on either method signs in to the same account.
+
+Once everyone who needs one has linked their account, you can make the provider the only way in:
+
+```yaml
+      DISABLE_LOCAL_AUTH: "true"
+```
+
+This turns off username and password sign-in and sign-up on the server, not just in the interface. It only takes effect when the OIDC client is fully configured, so setting it alone can't lock you out.
 
 ## Standalone Container
 

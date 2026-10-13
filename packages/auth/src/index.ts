@@ -1,6 +1,6 @@
 import { type } from "arktype";
 import { betterAuth } from "better-auth";
-import { createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { signJWT } from "better-auth/crypto";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { jwt as jwtPlugin } from "better-auth/plugins";
@@ -14,6 +14,7 @@ import { usernameOnly } from "./plugins/username-only";
 import { deletePolarCustomerByExternalId } from "./polar-customer-delete";
 import { writeAuthStderr } from "./runtime-environment";
 import { resolveAuthCapabilities } from "./capabilities";
+import { createOidcPlugin, isLocalAccountEmail, isLocalAuthPath } from "./oidc";
 import {
   createUnverifiedRegistrationReclaim,
   readSignUpBody,
@@ -58,6 +59,12 @@ interface AuthConfig {
   googleClientSecret?: string;
   microsoftClientId?: string;
   microsoftClientSecret?: string;
+  oidcIssuerUrl?: string;
+  oidcClientId?: string;
+  oidcClientSecret?: string;
+  oidcProviderName?: string;
+  oidcScopes?: string[] | null;
+  disableLocalAuth?: boolean;
   resendApiKey?: string;
   passkeyRpId?: string;
   passkeyRpName?: string;
@@ -147,6 +154,12 @@ const createAuth = (config: AuthConfig) => {
     googleClientSecret,
     microsoftClientId,
     microsoftClientSecret,
+    oidcIssuerUrl,
+    oidcClientId,
+    oidcClientSecret,
+    oidcProviderName,
+    oidcScopes,
+    disableLocalAuth,
     resendApiKey,
     passkeyRpId,
     passkeyRpName,
@@ -170,6 +183,11 @@ const createAuth = (config: AuthConfig) => {
     googleClientSecret,
     microsoftClientId,
     microsoftClientSecret,
+    oidcIssuerUrl,
+    oidcClientId,
+    oidcClientSecret,
+    oidcProviderName,
+    disableLocalAuth,
     passkeyOrigin,
     passkeyRpId,
   });
@@ -293,6 +311,21 @@ const createAuth = (config: AuthConfig) => {
     });
   };
 
+  const oidcEnabled = capabilities.socialProviders.oidc === true;
+
+  if (oidcEnabled && oidcIssuerUrl && oidcClientId && oidcClientSecret) {
+    plugins.push(
+      createOidcPlugin({
+        clientId: oidcClientId,
+        clientSecret: oidcClientSecret,
+        issuerUrl: oidcIssuerUrl,
+        scopes: oidcScopes,
+      }),
+    );
+  }
+
+  const localAuthDisabled = capabilities.disableLocalAuth === true;
+
   const auth = betterAuth({
     account: {
       accountLinking: {
@@ -358,8 +391,27 @@ const createAuth = (config: AuthConfig) => {
       autoSignInAfterVerification: true,
       sendVerificationEmail,
     },
+    databaseHooks: {
+      user: {
+        create: {
+          before: (user) => {
+            if (oidcEnabled && isLocalAccountEmail(user.email)) {
+              return Promise.resolve(false);
+            }
+            return Promise.resolve();
+          },
+        },
+      },
+    },
     hooks: {
-      before: createAuthMiddleware(() => Promise.resolve()),
+      before: createAuthMiddleware((context) => {
+        if (localAuthDisabled && isLocalAuthPath(context.path)) {
+          throw new APIError("FORBIDDEN", {
+            message: "Local authentication is disabled",
+          });
+        }
+        return Promise.resolve();
+      }),
     },
     onAPIError: {
       onError(error: unknown) {

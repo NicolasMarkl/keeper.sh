@@ -133,6 +133,39 @@ describe("AuthForm", () => {
     expect(markup).not.toContain("Use passkey");
   });
 
+  it("renders the OIDC button when the oidc provider is enabled", () => {
+    const markup = renderToStaticMarkup(
+      <AuthForm
+        capabilities={{
+          ...capabilities,
+          socialProviders: { google: false, microsoft: false, oidc: true },
+          oidcProviderName: "Pocket ID",
+        }}
+        copy={copy}
+      />,
+    );
+
+    expect(markup).toContain('href="/auth/oidc"');
+    expect(markup).toContain("Sign in with Pocket ID");
+  });
+
+  it("hides the credential form when local auth is disabled", () => {
+    const markup = renderToStaticMarkup(
+      <AuthForm
+        capabilities={{
+          ...capabilities,
+          disableLocalAuth: true,
+          socialProviders: { google: false, microsoft: false, oidc: true },
+        }}
+        copy={copy}
+      />,
+    );
+
+    expect(markup).not.toContain('name="email"');
+    expect(markup).not.toContain("<div>or</div>");
+    expect(markup).toContain('href="/auth/oidc"');
+  });
+
   it("keeps email autofill semantics for registration", () => {
     const markup = renderToStaticMarkup(
       <AuthForm
