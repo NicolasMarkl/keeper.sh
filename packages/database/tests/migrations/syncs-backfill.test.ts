@@ -109,6 +109,8 @@ interface SyncRow {
   skipAllDay: boolean;
   skipFocusTime: boolean;
   skipOutOfOffice: boolean;
+  skipAvailabilities: string[];
+  skipTitleKeywords: string[];
 }
 
 interface PairRow {
@@ -164,6 +166,10 @@ const seedCalendars = async (client: Client): Promise<void> => {
       ('b1000000-0000-4000-8000-000000000004', 'mapped-user', '${SECOND_ACCOUNT_ID}', 'Calendar', 'oauth', '{pull,push}', true, '{{calendar_name}}', true, true, false, false, false, false)
   `);
   await client.query(`
+    UPDATE "calendars" SET "excludeAvailabilities" = '{tentative,free}', "excludeTitleKeywords" = '{Lunch,Hold}'
+    WHERE "id" = 'bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc'
+  `);
+  await client.query(`
     INSERT INTO "source_destination_mappings" ("sourceCalendarId", "destinationCalendarId") VALUES
       ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
       ('abababab-abab-4bab-8bab-abababababab', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
@@ -203,7 +209,7 @@ const readSyncs = async (client: Client): Promise<SyncRow[]> => {
   const syncs = await client.query<SyncRow>(`
     SELECT
       s."name", s."mode", s."shareAs", s."busyTitle", s."markPrivate",
-      s."skipAllDay", s."skipFocusTime", s."skipOutOfOffice",
+      s."skipAllDay", s."skipFocusTime", s."skipOutOfOffice", s."skipAvailabilities", s."skipTitleKeywords",
       (SELECT jsonb_agg(rule - 'id') FROM jsonb_array_elements(s."rules") rule) AS "earlier",
       string_agg(c."name" || ':' || sc."role", ',' ORDER BY sc."role" DESC, sc."position") AS "calendars"
     FROM "syncs" s
@@ -243,7 +249,18 @@ const replaySyncsMigration = async (client: Client): Promise<void> => {
   }
 };
 
-const busy = { busyTitle: null, earlier: null, markPrivate: false, mode: "one_way", shareAs: "busy_only", skipAllDay: false, skipFocusTime: false, skipOutOfOffice: false };
+const busy = {
+  busyTitle: null,
+  earlier: null,
+  markPrivate: false,
+  mode: "one_way",
+  shareAs: "busy_only",
+  skipAllDay: false,
+  skipAvailabilities: [],
+  skipFocusTime: false,
+  skipOutOfOffice: false,
+  skipTitleKeywords: [],
+};
 
 const everyEvent = (actions: unknown[]) => [{
   actions,
@@ -268,7 +285,15 @@ const EXPECTED_SYNCS: SyncRow[] = [
   { ...busy, calendars: "MeshA:source,Family:destination", name: "MeshA → Family" },
   { ...busy, calendars: "MeshA:member,MeshB:member,MeshC:member", mode: "both_ways", name: "MeshA ↔ MeshB ↔ MeshC" },
   { ...busy, calendars: "Mine:source,Theirs:destination", name: "Mine → Theirs" },
-  { ...busy, busyTitle: "Taken", calendars: "Named:source,Family:destination", name: "Named → Family", skipFocusTime: true },
+  {
+    ...busy,
+    busyTitle: "Taken",
+    calendars: "Named:source,Family:destination",
+    name: "Named → Family",
+    skipAvailabilities: ["free", "tentative"],
+    skipFocusTime: true,
+    skipTitleKeywords: ["Lunch", "Hold"],
+  },
   {
     ...busy,
     calendars: "Partial:source,Family:destination,Personal:destination",

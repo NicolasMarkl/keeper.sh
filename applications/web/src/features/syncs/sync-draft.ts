@@ -20,13 +20,14 @@ import type {
   SyncCalendarRole,
   SyncCalendars,
   SyncDefinition,
+  SyncAvailability,
   SyncMode,
   SyncSkip,
 } from "@keeper.sh/data-schemas";
 import type { CalendarSource } from "@/types/api";
 import { canPull, canPush } from "@/utils/calendars";
 import { ruleProblem } from "./rule-editing";
-import { SKIP_LABELS, calendarName, summarizeSync, type CalendarsById } from "./syncs";
+import { SKIP_LABELS, STATUS_LABELS, calendarName, summarizeSync, type CalendarsById } from "./syncs";
 import { SYNC_TEMPLATES, isSyncTemplateKey, type SyncTemplateKey } from "./templates";
 
 export interface SyncDraft extends SyncDefinition {
@@ -279,6 +280,7 @@ export const sameValue = (left: unknown, right: unknown): boolean => stable(left
 export type SyncRemoval =
   | { kind: "pair"; sourceCalendarId: string; destinationCalendarId: string }
   | { kind: "skip"; skip: SyncSkip }
+  | { kind: "status"; status: SyncAvailability }
   | { kind: "keyword"; keyword: string }
   | { kind: "rule"; name: string };
 
@@ -300,6 +302,9 @@ export const saveRemovals = (previous: SyncDefinition, next: SyncDefinition): Sy
   const skips = SKIP_FIELDS
     .filter(([, field]) => next[field] && !previous[field])
     .map(([skip]): SyncRemoval => ({ kind: "skip", skip }));
+  const statuses = next.skipAvailabilities
+    .filter((status) => !previous.skipAvailabilities.includes(status))
+    .map((status): SyncRemoval => ({ kind: "status", status }));
   const knownKeywords = new Set(previous.skipTitleKeywords.map((keyword) => keyword.toLocaleLowerCase()));
   const keywords = next.skipTitleKeywords
     .filter((keyword) => !knownKeywords.has(keyword.toLocaleLowerCase()))
@@ -308,7 +313,7 @@ export const saveRemovals = (previous: SyncDefinition, next: SyncDefinition): Sy
   const rules = next.rules
     .filter((rule) => rule.actions.some((action) => action.kind === "skip") && !knownRules.has(stable(rule)))
     .map((rule): SyncRemoval => ({ kind: "rule", name: rule.name }));
-  return [...pairs, ...skips, ...keywords, ...rules];
+  return [...pairs, ...skips, ...statuses, ...keywords, ...rules];
 };
 
 export const isRiskySave = (previous: SyncDefinition, next: SyncDefinition): boolean => saveRemovals(previous, next).length > 0;
@@ -327,6 +332,7 @@ export const describeRemovals = (removals: readonly SyncRemoval[], calendarsById
       fromByDestination.set(removal.destinationCalendarId, [...sources, calendarName(calendarsById, removal.sourceCalendarId)]);
     }
     if (removal.kind === "skip") lines.push(`Copies of ${SKIP_LABELS[removal.skip].toLowerCase()} are removed.`);
+    if (removal.kind === "status") lines.push(`Copies of ${STATUS_LABELS[removal.status].toLowerCase()} events are removed.`);
     if (removal.kind === "keyword") lines.push(`Copies of events titled “${removal.keyword}” are removed.`);
     if (removal.kind === "rule") lines.push(`Copies that ${removal.name} skips are removed.`);
   }
@@ -337,7 +343,8 @@ export const describeRemovals = (removals: readonly SyncRemoval[], calendarsById
 
 const SAVE_KEYS = [
   "busyTitle", "destinationCalendarIds", "markPrivate", "memberCalendarIds", "mode",
-  "rules", "shareAs", "skipAllDay", "skipFocusTime", "skipOutOfOffice", "skipTitleKeywords", "sourceCalendarIds",
+  "rules", "shareAs", "skipAllDay", "skipAvailabilities", "skipFocusTime", "skipOutOfOffice", "skipTitleKeywords",
+  "sourceCalendarIds",
 ] as const satisfies readonly (keyof PatchSyncBody & keyof SyncDefinition)[];
 
 // Only what differs from the copy the user started from, so a save can't put back a field changed elsewhere since.
@@ -372,6 +379,7 @@ export const toCreateBody = (draft: SyncDraft, fallbackName: string): CreateSync
   rules: draft.rules,
   shareAs: draft.shareAs,
   skipAllDay: draft.skipAllDay,
+  skipAvailabilities: draft.skipAvailabilities,
   skipFocusTime: draft.skipFocusTime,
   skipOutOfOffice: draft.skipOutOfOffice,
   skipTitleKeywords: draft.skipTitleKeywords,

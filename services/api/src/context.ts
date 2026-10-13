@@ -63,6 +63,18 @@ const parseTrustedOrigins = (origins?: string): string[] => {
 
 const trustedOrigins = parseTrustedOrigins(env.TRUSTED_ORIGINS);
 
+const parseOidcScopes = (scopes?: string): string[] | null => {
+  const parsed = (scopes ?? "")
+    .split(",")
+    .map((scope): string => scope.trim())
+    .filter(Boolean);
+
+  if (parsed.length === 0) {
+    return null;
+  }
+  return parsed;
+};
+
 const { auth, capabilities: authCapabilities } = createAuth({
   database,
   secret: env.BETTER_AUTH_SECRET,
@@ -74,6 +86,12 @@ const { auth, capabilities: authCapabilities } = createAuth({
   googleClientSecret: env.GOOGLE_CLIENT_SECRET,
   microsoftClientId: env.MICROSOFT_CLIENT_ID,
   microsoftClientSecret: env.MICROSOFT_CLIENT_SECRET,
+  oidcIssuerUrl: env.OIDC_ISSUER_URL,
+  oidcClientId: env.OIDC_CLIENT_ID,
+  oidcClientSecret: env.OIDC_CLIENT_SECRET,
+  oidcProviderName: env.OIDC_PROVIDER_NAME,
+  oidcScopes: parseOidcScopes(env.OIDC_SCOPES),
+  disableLocalAuth: env.DISABLE_LOCAL_AUTH ?? false,
   resendApiKey: env.RESEND_API_KEY,
   passkeyRpId: env.PASSKEY_RP_ID,
   passkeyRpName: env.PASSKEY_RP_NAME,

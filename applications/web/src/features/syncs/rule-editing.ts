@@ -29,11 +29,16 @@ export const createRuleId = (): string => {
   return `${digits.slice(0, 8)}-${digits.slice(8, 12)}-${digits.slice(12, 16)}-${digits.slice(16, 20)}-${digits.slice(20)}`;
 };
 
-const CONDITION_ORDER: readonly ConditionKind[] = ["title_contains", "all_day", "timed", "focus_time", "out_of_office"];
+const CONDITION_ORDER: readonly ConditionKind[] = [
+  "title_contains", "all_day", "timed", "focus_time", "out_of_office", "busy", "free", "tentative",
+];
 const ACTION_ORDER: readonly ActionKind[] = ["skip", "rename", "drop_description", "drop_location", "mark_private"];
 
 export const CONDITION_LABELS: Record<ConditionKind, string> = {
   all_day: "Is All-Day",
+  busy: "Shows as Busy",
+  free: "Shows as Free",
+  tentative: "Is Tentative",
   focus_time: "Is Focus Time",
   out_of_office: "Is Out of Office",
   timed: "Is Timed",
@@ -48,8 +53,13 @@ export const ACTION_LABELS: Record<ActionKind, string> = {
   skip: "Don't Copy",
 };
 
-// All-day and timed cannot both hold, so offering the second would build a rule that never matches when matching all.
-const OPPOSITES: Partial<Record<ConditionKind, ConditionKind>> = { all_day: "timed", timed: "all_day" };
+// All-day and timed (or busy and free) cannot both hold, so offering the second would build a rule that never matches when matching all.
+const OPPOSITES: Partial<Record<ConditionKind, ConditionKind>> = {
+  all_day: "timed",
+  busy: "free",
+  free: "busy",
+  timed: "all_day",
+};
 
 export const isSkip = (action: RuleAction): boolean => action.kind === "skip";
 

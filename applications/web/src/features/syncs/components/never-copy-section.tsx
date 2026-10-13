@@ -1,7 +1,10 @@
 import CalendarRange from "lucide-react/dist/esm/icons/calendar-range";
+import Circle from "lucide-react/dist/esm/icons/circle";
+import CircleDashed from "lucide-react/dist/esm/icons/circle-dashed";
+import CircleDot from "lucide-react/dist/esm/icons/circle-dot";
 import Crosshair from "lucide-react/dist/esm/icons/crosshair";
 import Plane from "lucide-react/dist/esm/icons/plane";
-import type { SyncSettings } from "@keeper.sh/data-schemas";
+import type { SyncAvailability, SyncSettings } from "@keeper.sh/data-schemas";
 import { MAX_SKIP_KEYWORDS, normalizeSkipKeywords } from "@keeper.sh/data-schemas";
 import { getCommercialMode } from "@/config/commercial";
 import { DashboardSection } from "@/components/ui/primitives/dashboard-heading";
@@ -26,6 +29,12 @@ const SKIP_ROWS: { icon: typeof Plane; key: SkipKey; label: string }[] = [
   { icon: Plane, key: "skipOutOfOffice", label: "Out of Office" },
 ];
 
+const STATUS_ROWS: { icon: typeof Plane; label: string; status: SyncAvailability }[] = [
+  { icon: CircleDot, label: "Busy Events", status: "busy" },
+  { icon: Circle, label: "Free Events", status: "free" },
+  { icon: CircleDashed, label: "Tentative Events", status: "tentative" },
+];
+
 interface NeverCopySectionProps {
   settings: SyncSettings;
   locked: boolean;
@@ -37,6 +46,10 @@ interface NeverCopySectionProps {
 export function NeverCopySection({ settings, locked, onChange }: NeverCopySectionProps) {
   const keywords = settings.skipTitleKeywords;
   const problem = keywordProblem(keywords);
+  const statuses = settings.skipAvailabilities;
+  const toggleStatus = (status: SyncAvailability, checked: boolean) => onChange({
+    skipAvailabilities: checked ? [...statuses, status] : statuses.filter((candidate) => candidate !== status),
+  });
   const addKeyword = (keyword: string) => {
     const next = normalizeSkipKeywords([...keywords, keyword]);
     if (next.length !== keywords.length) onChange({ skipTitleKeywords: next });
@@ -53,6 +66,19 @@ export function NeverCopySection({ settings, locked, onChange }: NeverCopySectio
               checked={settings[key]}
               disabled={locked && !settings[key]}
               onCheckedChange={(checked) => onChange({ [key]: checked })}
+            >
+              <NavigationMenuItemIcon>
+                <Icon size={15} />
+              </NavigationMenuItemIcon>
+              <NavigationMenuItemLabel>{label}</NavigationMenuItemLabel>
+            </NavigationMenuToggleItem>
+          ))}
+          {STATUS_ROWS.map(({ icon: Icon, label, status }) => (
+            <NavigationMenuToggleItem
+              key={status}
+              checked={statuses.includes(status)}
+              disabled={locked && !statuses.includes(status)}
+              onCheckedChange={(checked) => toggleStatus(status, checked)}
             >
               <NavigationMenuItemIcon>
                 <Icon size={15} />
@@ -78,6 +104,7 @@ export function NeverCopySection({ settings, locked, onChange }: NeverCopySectio
           )}
         </NavigationMenu>
       </MenuGate>
+      {statuses.includes("tentative") && <MenuHint>Only Outlook calendars and iCal feeds mark events as tentative.</MenuHint>}
       {problem && <MenuHint tone="danger">{problem}</MenuHint>}
     </>
   );

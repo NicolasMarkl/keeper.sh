@@ -6,6 +6,7 @@ import { resolveCalendarZonedInstants } from "./resolve-zoned-instants";
 import { synthesizeMissingVtimezones } from "./synthesize-vtimezones";
 
 interface CalendarNonStandardValues {
+  busyStatus?: string;
   wrTimezone?: string;
 }
 
@@ -16,6 +17,10 @@ interface ParseIcsCalendarOptions {
 const parseTextLine = (line: Line): string => line.value;
 
 const CALENDAR_NON_STANDARD_VALUES: ParseNonStandardValues<CalendarNonStandardValues> = {
+  busyStatus: {
+    name: "X-MICROSOFT-CDO-BUSYSTATUS",
+    convert: parseTextLine,
+  },
   wrTimezone: {
     name: "X-WR-TIMEZONE",
     convert: parseTextLine,

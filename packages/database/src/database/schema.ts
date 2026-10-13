@@ -20,7 +20,7 @@ import {
   DEFAULT_HISTORIC_SYNC_RANGE,
   SYNC_RANGE_DEFINITIONS,
 } from "@keeper.sh/data-schemas";
-import type { AdvancedRule, SyncRunRecord } from "@keeper.sh/data-schemas";
+import type { AdvancedRule, SyncAvailability, SyncRunRecord } from "@keeper.sh/data-schemas";
 import { user } from "./auth-schema";
 
 const DEFAULT_EVENT_COUNT = 0;
@@ -116,13 +116,16 @@ const calendarsTable = pgTable(
       .references(() => calendarAccountsTable.id, { onDelete: "cascade" }),
     calendarType: text().notNull(),
     calendarUrl: text(),
+    color: text(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     excludeAllDayEvents: boolean().notNull().default(false),
+    excludeAvailabilities: text().array().notNull().default([]),
     excludeEventDescription: boolean().notNull().default(true),
     excludeEventLocation: boolean().notNull().default(true),
     excludeEventName: boolean().notNull().default(true),
     excludeFocusTime: boolean().notNull().default(false),
     excludeOutOfOffice: boolean().notNull().default(false),
+    excludeTitleKeywords: text().array().notNull().default([]),
     includeInIcalFeed: boolean().notNull().default(false),
     treatFullDayTimedEventsAsAllDay: boolean().notNull().default(false),
     customEventName: text().notNull().default("{{calendar_name}}"),
@@ -268,6 +271,7 @@ const eventStatesTable = pgTable(
     calendarId: uuid()
       .notNull()
       .references(() => calendarsTable.id, { onDelete: "cascade" }),
+    color: text(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     description: text(),
     endTime: timestamp({ withTimezone: true }).notNull(),
@@ -426,6 +430,7 @@ const syncsTable = pgTable(
     rules: jsonb().$type<AdvancedRule[]>().notNull().default([]),
     shareAs: text().notNull().default("busy_only"),
     skipAllDay: boolean().notNull().default(false),
+    skipAvailabilities: jsonb().$type<SyncAvailability[]>().notNull().default([]),
     skipFocusTime: boolean().notNull().default(false),
     skipOutOfOffice: boolean().notNull().default(false),
     skipTitleKeywords: jsonb().$type<string[]>().notNull().default([]),

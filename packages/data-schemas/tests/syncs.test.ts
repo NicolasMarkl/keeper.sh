@@ -24,11 +24,13 @@ import {
 } from "../src/index";
 
 const facts = (overrides: Partial<RuleEventFacts> = {}): RuleEventFacts => ({
+  availability: "busy",
   calendarName: "Work",
   description: "Agenda",
   isAllDay: false,
   isFocusTime: false,
   isOutOfOffice: false,
+  isTentative: false,
   location: "Room 4",
   title: "Design Review",
   ...overrides,
@@ -360,6 +362,38 @@ describe("diffSyncChanges details", () => {
     expect(diffSyncChanges(before, { ...before, rules: [reordered], skipTitleKeywords: ["Lunch"] })).toEqual([
       { keyword: "Lunch", kind: "keyword_added" },
       { keyword: "lunch", kind: "keyword_removed" },
+    ]);
+  });
+});
+
+describe("status skips", () => {
+  const skipping = (skipAvailabilities: SyncSettings["skipAvailabilities"]) => compileSyncRules(settings({ skipAvailabilities }));
+
+  it("skips free events, tentative ones included", () => {
+    const rules = skipping(["free"]);
+    expect(evaluateRules(rules, facts({ availability: "free" }))).toEqual({ skip: true });
+    expect(evaluateRules(rules, facts({ availability: "free", isTentative: true }))).toEqual({ skip: true });
+    expect(evaluateRules(rules, facts())).toEqual({ skip: false, summary: "Work" });
+  });
+
+  it("treats a tentative event as Tentative rather than Busy", () => {
+    expect(evaluateRules(skipping(["busy"]), facts({ isTentative: true }))).toEqual({ skip: false, summary: "Work" });
+    expect(evaluateRules(skipping(["busy"]), facts())).toEqual({ skip: true });
+    expect(evaluateRules(skipping(["tentative"]), facts({ isTentative: true }))).toEqual({ skip: true });
+  });
+
+  it("is a Pro setting that free plans may keep or remove", () => {
+    const pro = settings({ skipAvailabilities: ["free", "tentative"] });
+    expect(addsProSettings(null, pro)).toBe(true);
+    expect(addsProSettings(pro, { ...pro, skipAvailabilities: ["free"] })).toBe(false);
+    expect(withoutProSettings(pro).skipAvailabilities).toEqual([]);
+  });
+
+  it("reports each status turned on or off", () => {
+    const before = definition({ skipAvailabilities: ["free"] });
+    expect(diffSyncChanges(before, { ...before, skipAvailabilities: ["tentative"] })).toEqual([
+      { kind: "status_skip_changed", status: "free", to: false },
+      { kind: "status_skip_changed", status: "tentative", to: true },
     ]);
   });
 });

@@ -9,8 +9,8 @@ import type { RuleAction, RuleCondition, RuleMatch } from "./rules";
 
 const SYNC_NAME_MAX_LENGTH = 80;
 const BUSY_TITLE_MAX_LENGTH = 200;
-const SKIP_KEYWORD_MAX_LENGTH = 60;
-const MAX_SKIP_KEYWORDS = 20;
+const SKIP_KEYWORD_MAX_LENGTH = 100;
+const MAX_SKIP_KEYWORDS = 50;
 const MAX_ADVANCED_RULES = 20;
 const MAX_RULE_CONDITIONS = 10;
 const MAX_RULE_ACTIONS = 5;
@@ -23,6 +23,10 @@ const EVENT_NAME_TOKEN_PATTERN = /\{\{event_name\}\}/g;
 
 const syncModeSchema = type("'one_way' | 'both_ways'");
 type SyncMode = typeof syncModeSchema.infer;
+
+const SYNC_AVAILABILITIES = ["busy", "free", "tentative"] as const;
+const syncAvailabilitySchema = type.enumerated(...SYNC_AVAILABILITIES);
+type SyncAvailability = typeof syncAvailabilitySchema.infer;
 
 const shareAsSchema = type("'busy_only' | 'title_only' | 'full'");
 type ShareAs = typeof shareAsSchema.infer;
@@ -77,6 +81,7 @@ const syncSettingsDefinition = {
   "rules?": advancedRuleSchema.array().atMostLength(MAX_ADVANCED_RULES),
   "shareAs?": shareAsSchema,
   "skipAllDay?": "boolean",
+  "skipAvailabilities?": syncAvailabilitySchema.array().atMostLength(SYNC_AVAILABILITIES.length),
   "skipFocusTime?": "boolean",
   "skipOutOfOffice?": "boolean",
   "skipTitleKeywords?": skipKeywordSchema.array().atMostLength(MAX_SKIP_KEYWORDS),
@@ -113,6 +118,7 @@ interface SyncSettings {
   rules: AdvancedRule[];
   shareAs: ShareAs;
   skipAllDay: boolean;
+  skipAvailabilities: SyncAvailability[];
   skipFocusTime: boolean;
   skipOutOfOffice: boolean;
   skipTitleKeywords: string[];
@@ -129,6 +135,7 @@ const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   rules: [],
   shareAs: "busy_only",
   skipAllDay: false,
+  skipAvailabilities: [],
   skipFocusTime: false,
   skipOutOfOffice: false,
   skipTitleKeywords: [],
@@ -250,6 +257,9 @@ const validateSyncCalendarLimit = (
   return `Free plans copy from up to ${limit} calendars into up to ${limit}.`;
 };
 
+const normalizeSkipAvailabilities = (availabilities: readonly SyncAvailability[]): SyncAvailability[] =>
+  SYNC_AVAILABILITIES.filter((availability) => availabilities.includes(availability));
+
 interface SyncPair {
   destinationCalendarId: string;
   sourceCalendarId: string;
@@ -290,6 +300,7 @@ interface CompiledSyncRule {
 const SKIP_ALL_DAY_RULE_ID = "skip:all_day";
 const SKIP_FOCUS_TIME_RULE_ID = "skip:focus_time";
 const SKIP_OUT_OF_OFFICE_RULE_ID = "skip:out_of_office";
+const SKIP_AVAILABILITY_RULE_ID = "skip:availability";
 const SKIP_KEYWORDS_RULE_ID = "skip:keywords";
 const SHARE_AS_RULE_ID = "share";
 
@@ -344,6 +355,16 @@ const compileSyncRules = (settings: SyncSettings): CompiledSyncRule[] => {
   if (settings.skipOutOfOffice) {
     rules.push({ actions: SKIP, conditions: [{ kind: "out_of_office" }], id: SKIP_OUT_OF_OFFICE_RULE_ID, match: "all", name: "Out of office" });
   }
+  const availabilities = normalizeSkipAvailabilities(settings.skipAvailabilities);
+  if (availabilities.length > 0) {
+    rules.push({
+      actions: SKIP,
+      conditions: availabilities.map((kind) => ({ kind })),
+      id: SKIP_AVAILABILITY_RULE_ID,
+      match: "any",
+      name: "Statuses",
+    });
+  }
   const keywords = normalizeSkipKeywords(settings.skipTitleKeywords);
   if (keywords.length > 0) {
     rules.push({
@@ -386,6 +407,7 @@ const withoutProSettings = <TSettings extends SyncSettings>(settings: TSettings)
   rules: DEFAULT_SYNC_SETTINGS.rules,
   shareAs: DEFAULT_SYNC_SETTINGS.shareAs,
   skipAllDay: DEFAULT_SYNC_SETTINGS.skipAllDay,
+  skipAvailabilities: DEFAULT_SYNC_SETTINGS.skipAvailabilities,
   skipFocusTime: DEFAULT_SYNC_SETTINGS.skipFocusTime,
   skipOutOfOffice: DEFAULT_SYNC_SETTINGS.skipOutOfOffice,
   skipTitleKeywords: DEFAULT_SYNC_SETTINGS.skipTitleKeywords,
@@ -403,6 +425,9 @@ const addsProSettings = (current: SyncSettings | null, next: SyncSettings): bool
     return true;
   }
   if (PRO_TOGGLES.some((key) => next[key] && !keep[key])) {
+    return true;
+  }
+  if (next.skipAvailabilities.some((availability) => !keep.skipAvailabilities.includes(availability))) {
     return true;
   }
   const keywords = new Set(keep.skipTitleKeywords.map((keyword) => keyword.toLocaleLowerCase()));
@@ -424,6 +449,7 @@ type SyncChange =
   | { kind: "busy_title_changed" }
   | { kind: "private_changed"; to: boolean }
   | { kind: "skip_changed"; skip: SyncSkip; to: boolean }
+  | { kind: "status_skip_changed"; status: SyncAvailability; to: boolean }
   | { kind: "keyword_added" | "keyword_removed"; keyword: string }
   | { kind: "calendar_added" | "calendar_removed"; calendarId: string; role: SyncCalendarRole }
   | { kind: "rules_changed" }
@@ -479,6 +505,9 @@ const diffSkips = (previous: SyncSettings, next: SyncSettings): SyncChange[] => 
   ...SKIP_KEYS
     .filter(([, key]) => previous[key] !== next[key])
     .map(([skip, key]): SyncChange => ({ kind: "skip_changed", skip, to: next[key] })),
+  ...SYNC_AVAILABILITIES
+    .filter((status) => previous.skipAvailabilities.includes(status) !== next.skipAvailabilities.includes(status))
+    .map((status): SyncChange => ({ kind: "status_skip_changed", status, to: next.skipAvailabilities.includes(status) })),
   ...missingKeywords(next.skipTitleKeywords, previous.skipTitleKeywords)
     .map((keyword): SyncChange => ({ keyword, kind: "keyword_added" })),
   ...missingKeywords(previous.skipTitleKeywords, next.skipTitleKeywords)
@@ -614,10 +643,12 @@ export {
   MAX_SYNC_CALENDARS,
   SHARE_AS_RULE_ID,
   SKIP_ALL_DAY_RULE_ID,
+  SKIP_AVAILABILITY_RULE_ID,
   SKIP_FOCUS_TIME_RULE_ID,
   SKIP_KEYWORDS_RULE_ID,
   SKIP_KEYWORD_MAX_LENGTH,
   SKIP_OUT_OF_OFFICE_RULE_ID,
+  SYNC_AVAILABILITIES,
   SYNC_NAME_MAX_LENGTH,
   addsProSettings,
   compileSyncRules,
@@ -625,6 +656,7 @@ export {
   deriveSyncPairs,
   diffSyncChanges,
   normalizeAdvancedRules,
+  normalizeSkipAvailabilities,
   normalizeSkipKeywords,
   normalizeSyncCalendars,
   patchSyncBodySchema,
@@ -648,6 +680,7 @@ export type {
   ShareAs,
   SyncActivityEntry,
   SyncActivityPage,
+  SyncAvailability,
   SyncActivitySummary,
   SyncCalendarRole,
   SyncCalendars,

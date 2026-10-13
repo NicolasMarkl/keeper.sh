@@ -13,11 +13,13 @@ import {
 } from "../src/index";
 
 const facts = (overrides: Partial<RuleEventFacts> = {}): RuleEventFacts => ({
+  availability: "busy",
   calendarName: "Work",
   description: "Agenda",
   isAllDay: false,
   isFocusTime: false,
   isOutOfOffice: false,
+  isTentative: false,
   location: "Room 4",
   title: "Daily Standup",
   ...overrides,

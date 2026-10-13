@@ -22,11 +22,13 @@ const TEST_RECONCILIATION_SCOPE = {
 };
 
 const facts: RuleEventFacts = {
+  availability: "busy",
   calendarName: "Source",
   description: "agenda for the sync",
   isAllDay: false,
   isFocusTime: false,
   isOutOfOffice: false,
+  isTentative: false,
   location: "Room 101",
   title: "Weekly sync",
 };

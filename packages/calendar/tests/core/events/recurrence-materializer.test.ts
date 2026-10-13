@@ -168,6 +168,34 @@ describe("materializeRecurrenceEvents", () => {
     ]);
   });
 
+  it("keeps the original slot empty when an override was withheld from sync", () => {
+    const result = materializeRecurrenceEvents([createWeeklyMaster()], WINDOW, {
+      suppressedOverrides: [{
+        calendarId: "calendar-1",
+        recurrenceId: new Date("2026-01-12T09:00:00.000Z"),
+        sourceEventUid: "series-1",
+      }],
+    });
+
+    expect(occurrenceStarts(result)).toEqual([
+      "2026-01-05T09:00:00.000Z",
+      "2026-01-19T09:00:00.000Z",
+      "2026-01-26T09:00:00.000Z",
+    ]);
+  });
+
+  it("does not let a withheld override suppress a slot in another calendar's series", () => {
+    const result = materializeRecurrenceEvents([createWeeklyMaster()], WINDOW, {
+      suppressedOverrides: [{
+        calendarId: "calendar-2",
+        recurrenceId: new Date("2026-01-12T09:00:00.000Z"),
+        sourceEventUid: "series-1",
+      }],
+    });
+
+    expect(occurrenceStarts(result)).toHaveLength(4);
+  });
+
   it("preserves colliding overrides while suppressing both original slots", () => {
     const firstOverride = createEvent({
       endTime: new Date("2026-01-15T16:00:00.000Z"),

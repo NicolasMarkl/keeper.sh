@@ -107,7 +107,12 @@ const parseSourceEventType = (
   value: string | null,
   availability: string | null,
 ): SourceEventType => {
-  if (value === "focusTime" || value === "outOfOffice" || value === "workingLocation") {
+  if (
+    value === "focusTime"
+    || value === "outOfOffice"
+    || value === "tentative"
+    || value === "workingLocation"
+  ) {
     return value;
   }
 
@@ -122,14 +127,48 @@ const parseSourceEventType = (
   return "default";
 };
 
-const shouldExcludeSyncEvent = (event: {
+const isExcludedAvailability = (
+  excludeAvailabilities: string[],
+  sourceEventType: SourceEventType,
+  availability: string | null,
+): boolean => {
+  const resolved = parseAvailability(availability) ?? "busy";
+  if (sourceEventType !== "tentative") {
+    return excludeAvailabilities.includes(resolved);
+  }
+  if (excludeAvailabilities.includes("tentative")) {
+    return true;
+  }
+  return resolved === "free" && excludeAvailabilities.includes("free");
+};
+
+const lowercaseKeywords = (keywords: string[]): string[] =>
+  keywords.map((keyword) => keyword.toLowerCase());
+
+const titleContainsKeyword = (title: string | null, lowercasedKeywords: string[]): boolean => {
+  if (!title || lowercasedKeywords.length === 0) {
+    return false;
+  }
+  const normalizedTitle = title.toLowerCase();
+  return lowercasedKeywords.some((keyword) => normalizedTitle.includes(keyword));
+};
+
+interface SyncExclusionInput {
   excludeAllDayEvents: boolean;
+  excludeAvailabilities: string[];
   excludeFocusTime: boolean;
   excludeOutOfOffice: boolean;
+  excludeTitleKeywords: string[];
   availability: string | null;
   isAllDay: boolean | null;
   sourceEventType: string | null;
-}): boolean => {
+  title: string | null;
+}
+
+const matchesSyncExclusion = (
+  event: Omit<SyncExclusionInput, "excludeTitleKeywords">,
+  lowercasedTitleKeywords: string[],
+): boolean => {
   const sourceEventType = parseSourceEventType(event.sourceEventType, event.availability);
 
   if (sourceEventType === "workingLocation") {
@@ -144,9 +183,19 @@ const shouldExcludeSyncEvent = (event: {
   if (event.excludeOutOfOffice && sourceEventType === "outOfOffice") {
     return true;
   }
+  if (isExcludedAvailability(event.excludeAvailabilities, sourceEventType, event.availability)) {
+    return true;
+  }
+  if (titleContainsKeyword(event.title, lowercasedTitleKeywords)) {
+    return true;
+  }
 
   return false;
 };
+
+const shouldExcludeSyncEvent = (event: SyncExclusionInput): boolean =>
+  matchesSyncExclusion(event, lowercaseKeywords(event.excludeTitleKeywords));
+
 const DEFAULT_EVENT_NAME = "Busy";
 
 interface SyncableEventProjectionRow {
@@ -182,11 +231,13 @@ const projectSyncableEvent = (
   }
 
   const facts: RuleEventFacts = {
+    availability: parseAvailability(row.availability) ?? "busy",
     calendarName: row.calendarName,
     description: orAbsent(row.description),
     isAllDay: row.isAllDay === true,
     isFocusTime: sourceEventType === "focusTime",
     isOutOfOffice: sourceEventType === "outOfOffice",
+    isTentative: sourceEventType === "tentative",
     location: orAbsent(row.location),
     title: row.title ?? DEFAULT_EVENT_NAME,
   };
@@ -224,6 +275,7 @@ const getSyncRulesForDestination = async (
       rules: syncsTable.rules,
       shareAs: syncsTable.shareAs,
       skipAllDay: syncsTable.skipAllDay,
+      skipAvailabilities: syncsTable.skipAvailabilities,
       skipFocusTime: syncsTable.skipFocusTime,
       skipOutOfOffice: syncsTable.skipOutOfOffice,
       skipTitleKeywords: syncsTable.skipTitleKeywords,

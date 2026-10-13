@@ -203,7 +203,7 @@ describe("draft limits", () => {
   const rule = { actions: [{ kind: "skip" as const }], conditions: [{ kind: "title_contains" as const, value: "Lunch" }], id: "r1", match: "any" as const, name: "Lunches" };
 
   it("names the limit a draft runs into instead of leaving it to the server", () => {
-    expect(draftProblem({ ...valid, skipTitleKeywords: ["x".repeat(61)] })).toBe("Title words to skip can be up to 60 characters.");
+    expect(draftProblem({ ...valid, skipTitleKeywords: ["x".repeat(101)] })).toBe("Title words to skip can be up to 100 characters.");
     expect(draftProblem({ ...valid, busyTitle: "x".repeat(201) })).toBe("Busy titles can be up to 200 characters.");
     expect(draftProblem({ ...valid, rules: [{ ...rule, name: "x".repeat(81) }] })).toBe("Rule names can be up to 80 characters.");
     expect(draftProblem({ ...valid, rules: [{ ...rule, conditions: Array.from({ length: 11 }, () => rule.conditions[0]) }] }))

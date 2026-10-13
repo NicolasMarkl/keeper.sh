@@ -146,3 +146,21 @@ describe("newestFirst", () => {
     expect(syncs.map((sync) => sync.id)).toEqual(["a", "b", "c"]);
   });
 });
+
+describe("status skips in the preview", () => {
+  const skipping = { ...DEFAULT_SYNC_SETTINGS, skipAvailabilities: ["free" as const, "tentative" as const] };
+
+  it("adds a free and a tentative sample and names the status that held each back", () => {
+    const samples = previewEventsFor(skipping);
+    const lunch = samples.find((event) => event.availability === "free");
+    const coffee = samples.find((event) => event.isTentative);
+    expect(lunch && previewSync(skipping, lunch, "Work")).toMatchObject({ copy: null, decidedBy: "Never Copy · Free events" });
+    expect(coffee && previewSync(skipping, coffee, "Work")).toMatchObject({ copy: null, decidedBy: "Never Copy · Tentative events" });
+  });
+
+  it("describes a status turned on or off", () => {
+    expect(describeChange({ kind: "status_skip_changed", status: "free", to: true }, new Map())).toBe("Skipping free events.");
+    expect(describeChange({ kind: "status_skip_changed", status: "tentative", to: false }, new Map()))
+      .toBe("No longer skipping tentative events.");
+  });
+});

@@ -743,6 +743,7 @@ const hasSourceAuthorityChanged = (
 interface OAuthFetcherParams {
   accessToken: string;
   calendarId: string;
+  excludesTentative: boolean;
   externalCalendarId: string;
   syncToken: string | null;
   rateLimiter?: RedisRateLimiter;
@@ -1272,6 +1273,18 @@ const buildOAuthSourceQuery = (calendarIds: string[] | undefined) =>
     )
     .orderBy(...buildFleetPriorityOrder());
 
+// Outlook refetches a window once to classify tentative events, only for calendars a sync skips tentative events from.
+const excludesTentativeSql = sql<boolean>`exists (
+  select 1 from "sync_calendars" member
+  inner join "syncs" sync on sync."id" = member."syncId"
+  where member."calendarId" = ${calendarsTable.id}
+    and member."role" in ('source', 'member')
+    and (
+      sync."skipAvailabilities" @> '["tentative"]'::jsonb
+      or jsonb_path_exists(sync."rules", '$[*].conditions[*] ? (@.kind == "tentative")')
+    )
+)`;
+
 const ingestOAuthSources = async (
   calendarIds?: string[],
   correlationIdByCalendarId: Record<string, string> = {},
@@ -1327,6 +1340,7 @@ const ingestOAuthSources = async (
                   .select({
                     accountId: calendarAccountsTable.id,
                     accessToken: oauthCredentialsTable.accessToken,
+                    excludesTentative: excludesTentativeSql,
                     expiresAt: oauthCredentialsTable.expiresAt,
                     externalCalendarId: calendarsTable.externalCalendarId,
                     failureCount: calendarsTable.ingestFailureCount,
@@ -1405,6 +1419,7 @@ const ingestOAuthSources = async (
                 const fetcher = resolveOAuthFetcher(currentSource.provider, {
                   accessToken: tokenState.accessToken,
                   calendarId: source.calendarId,
+                  excludesTentative: currentSource.excludesTentative,
                   externalCalendarId: currentSource.externalCalendarId,
                   syncToken: ingestionState.syncToken,
                   rateLimiter,

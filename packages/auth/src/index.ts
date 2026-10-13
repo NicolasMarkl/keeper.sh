@@ -1,6 +1,6 @@
 import { type } from "arktype";
 import { betterAuth } from "better-auth";
-import { createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { signJWT } from "better-auth/crypto";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { jwt as jwtPlugin } from "better-auth/plugins";
@@ -14,6 +14,9 @@ import { usernameOnly } from "./plugins/username-only";
 import { deletePolarCustomerByExternalId } from "./polar-customer-delete";
 import { writeAuthStderr } from "./runtime-environment";
 import { resolveAuthCapabilities } from "./capabilities";
+import { createOidcPlugin, isLocalAccountEmail, isLocalAuthPath } from "./oidc";
+import { readMcpTokenVersion } from "./mcp-token-version";
+import type { McpTokenVersion } from "./mcp-token-version";
 import {
   createUnverifiedRegistrationReclaim,
   readSignUpBody,
@@ -58,6 +61,12 @@ interface AuthConfig {
   googleClientSecret?: string;
   microsoftClientId?: string;
   microsoftClientSecret?: string;
+  oidcIssuerUrl?: string;
+  oidcClientId?: string;
+  oidcClientSecret?: string;
+  oidcProviderName?: string;
+  oidcScopes?: string[] | null;
+  disableLocalAuth?: boolean;
   resendApiKey?: string;
   passkeyRpId?: string;
   passkeyRpName?: string;
@@ -69,6 +78,7 @@ interface AuthConfig {
 
 interface KeeperMcpAuthSession {
   scopes: string;
+  tokenVersion: McpTokenVersion;
   userId: string | null;
 }
 
@@ -107,6 +117,7 @@ const hasOAuthProviderApi = (
 };
 
 const mcpJwtClaimsSchema = type({
+  "keeper_token_version?": "number",
   scope: "string",
   sub: "string",
   "+": "delete",
@@ -147,6 +158,12 @@ const createAuth = (config: AuthConfig) => {
     googleClientSecret,
     microsoftClientId,
     microsoftClientSecret,
+    oidcIssuerUrl,
+    oidcClientId,
+    oidcClientSecret,
+    oidcProviderName,
+    oidcScopes,
+    disableLocalAuth,
     resendApiKey,
     passkeyRpId,
     passkeyRpName,
@@ -170,6 +187,11 @@ const createAuth = (config: AuthConfig) => {
     googleClientSecret,
     microsoftClientId,
     microsoftClientSecret,
+    oidcIssuerUrl,
+    oidcClientId,
+    oidcClientSecret,
+    oidcProviderName,
+    disableLocalAuth,
     passkeyOrigin,
     passkeyRpId,
   });
@@ -296,6 +318,21 @@ const createAuth = (config: AuthConfig) => {
     });
   };
 
+  const oidcEnabled = capabilities.socialProviders.oidc === true;
+
+  if (oidcEnabled && oidcIssuerUrl && oidcClientId && oidcClientSecret) {
+    plugins.push(
+      createOidcPlugin({
+        clientId: oidcClientId,
+        clientSecret: oidcClientSecret,
+        issuerUrl: oidcIssuerUrl,
+        scopes: oidcScopes,
+      }),
+    );
+  }
+
+  const localAuthDisabled = capabilities.disableLocalAuth === true;
+
   const auth = betterAuth({
     account: {
       accountLinking: {
@@ -361,8 +398,27 @@ const createAuth = (config: AuthConfig) => {
       autoSignInAfterVerification: true,
       sendVerificationEmail,
     },
+    databaseHooks: {
+      user: {
+        create: {
+          before: (user) => {
+            if (oidcEnabled && isLocalAccountEmail(user.email)) {
+              return Promise.resolve(false);
+            }
+            return Promise.resolve();
+          },
+        },
+      },
+    },
     hooks: {
-      before: createAuthMiddleware(() => Promise.resolve()),
+      before: createAuthMiddleware((context) => {
+        if (localAuthDisabled && isLocalAuthPath(context.path)) {
+          throw new APIError("FORBIDDEN", {
+            message: "Local authentication is disabled",
+          });
+        }
+        return Promise.resolve();
+      }),
     },
     onAPIError: {
       onError(error: unknown) {
@@ -450,6 +506,7 @@ const createAuth = (config: AuthConfig) => {
 
         return {
           scopes: claims.scope,
+          tokenVersion: readMcpTokenVersion(claims.keeper_token_version),
           userId: claims.sub,
         };
       },
@@ -496,11 +553,18 @@ export {
   KEEPER_API_SCOPES,
   KEEPER_API_SOURCE_SCOPE,
   KEEPER_API_SYNC_SCOPE,
+  KEEPER_API_WRITE_SCOPE,
 } from "./mcp-config";
+export {
+  CURRENT_MCP_TOKEN_VERSION,
+  LEGACY_MCP_TOKEN_VERSION,
+  resolveMissingMcpScope,
+} from "./mcp-token-version";
 export type {
   AuthConfig,
   AuthResult,
   KeeperMcpAuthApi,
   KeeperMcpAuthSession,
   KeeperMcpEnabledAuth,
+  McpTokenVersion,
 };

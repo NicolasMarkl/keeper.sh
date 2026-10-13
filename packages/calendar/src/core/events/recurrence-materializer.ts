@@ -20,8 +20,11 @@ interface RecurrenceMaterializationWindow {
   end: Date;
 }
 
+type SuppressedOverride = Pick<SyncableEvent, "calendarId" | "recurrenceId" | "sourceEventUid">;
+
 interface RecurrenceMaterializationOptions {
   onSeriesOverBudget?: (error: RecurrenceMaterializationLimitError) => void;
+  suppressedOverrides?: SuppressedOverride[];
 }
 
 interface RecurrenceSeriesIdentity {
@@ -309,7 +312,7 @@ const compareEvents = (first: SyncableEvent, second: SyncableEvent): number => {
   return 0;
 };
 
-const getSeriesKey = (event: SyncableEvent): string =>
+const getSeriesKey = (event: Pick<SyncableEvent, "calendarId" | "sourceEventUid">): string =>
   JSON.stringify([event.calendarId, event.sourceEventUid]);
 
 const getUniqueMastersBySeries = (events: SyncableEvent[]): Map<string, SyncableEvent> => {
@@ -337,7 +340,7 @@ const getUniqueMastersBySeries = (events: SyncableEvent[]): Map<string, Syncable
 };
 
 const getOverriddenSlotsByMaster = (
-  events: SyncableEvent[],
+  events: SuppressedOverride[],
   uniqueMastersBySeries: Map<string, SyncableEvent>,
 ): Map<SyncableEvent, Set<number>> => {
   const slotsByMaster = new Map<SyncableEvent, Set<number>>();
@@ -457,9 +460,12 @@ const materializeRecurrenceEvents = (
   assertValidWindow(window);
 
   const uniqueMastersBySeries = getUniqueMastersBySeries(events);
-  const overriddenSlotsByMaster = getOverriddenSlotsByMaster(events, uniqueMastersBySeries);
+  const { onSeriesOverBudget, suppressedOverrides = [] } = options;
+  const overriddenSlotsByMaster = getOverriddenSlotsByMaster(
+    [...events, ...suppressedOverrides],
+    uniqueMastersBySeries,
+  );
   const materializedEvents: MaterializedSyncableEvent[] = [];
-  const { onSeriesOverBudget } = options;
   const skippedSeriesUids = new Set<string>();
 
   for (const event of events) {

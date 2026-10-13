@@ -26,8 +26,9 @@ const rule = (overrides: Partial<AdvancedRule> = {}): AdvancedRule => ({
 
 describe("availableConditionKinds", () => {
   it("offers each kind once, keeps Title Contains, and leaves out the opposite of all-day when matching all", () => {
-    expect(availableConditionKinds(rule())).toEqual(["title_contains", "focus_time", "out_of_office"]);
-    expect(availableConditionKinds(rule({ match: "any" }))).toEqual(["title_contains", "timed", "focus_time", "out_of_office"]);
+    expect(availableConditionKinds(rule())).toEqual(["title_contains", "focus_time", "out_of_office", "busy", "free", "tentative"]);
+    expect(availableConditionKinds(rule({ match: "any" })))
+      .toEqual(["title_contains", "timed", "focus_time", "out_of_office", "busy", "free", "tentative"]);
   });
 
   it("runs out at the schema's condition limit", () => {

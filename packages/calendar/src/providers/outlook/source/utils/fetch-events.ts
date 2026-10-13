@@ -664,6 +664,7 @@ const parseOutlookEventsWithDiagnostics = (
       isAllDay: event.isAllDay ?? false,
       location: event.location?.displayName,
       sourceEventId: event.id,
+      ...event.showAs === "tentative" && { sourceEventType: "tentative" as const },
       startTime: instant.startTime,
       startTimeZone: instant.startTimeZone,
       ...event.subject && { title: event.subject },

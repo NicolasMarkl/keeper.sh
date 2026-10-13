@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS "syncs" (
 	"rules" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"shareAs" text DEFAULT 'busy_only' NOT NULL,
 	"skipAllDay" boolean DEFAULT false NOT NULL,
+	"skipAvailabilities" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"skipFocusTime" boolean DEFAULT false NOT NULL,
 	"skipOutOfOffice" boolean DEFAULT false NOT NULL,
 	"skipTitleKeywords" jsonb DEFAULT '[]'::jsonb NOT NULL,
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS "syncs" (
 	CONSTRAINT "syncs_share_as_check" CHECK ("syncs"."shareAs" IN ('busy_only', 'title_only', 'full'))
 );
 --> statement-breakpoint
+ALTER TABLE "syncs" ADD COLUMN IF NOT EXISTS "skipAvailabilities" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "sync_calendars" (
 	"calendarId" uuid NOT NULL,
 	"position" integer NOT NULL,
@@ -107,6 +109,7 @@ CREATE INDEX IF NOT EXISTS "sync_activity_sync_created_idx" ON "sync_activity" U
 DELETE FROM "source_destination_mappings" WHERE "sourceCalendarId" = "destinationCalendarId";--> statement-breakpoint
 -- Main applied the title, description and location flags separately. Share As covers three of those
 -- combinations; any other becomes Share As Everything plus one rule for every event that drops the same fields.
+DROP FUNCTION IF EXISTS keeper_legacy_sync_settings(uuid);--> statement-breakpoint
 CREATE OR REPLACE FUNCTION keeper_legacy_sync_settings("legacyCalendarId" uuid)
 RETURNS TABLE (
 	"shareAs" text,
@@ -115,7 +118,9 @@ RETURNS TABLE (
 	"markPrivate" boolean,
 	"skipAllDay" boolean,
 	"skipFocusTime" boolean,
-	"skipOutOfOffice" boolean
+	"skipOutOfOffice" boolean,
+	"skipAvailabilities" jsonb,
+	"skipTitleKeywords" jsonb
 )
 LANGUAGE sql
 STABLE
@@ -129,7 +134,9 @@ AS $$
 			c."markEventsAsPrivate",
 			c."excludeAllDayEvents",
 			c."excludeFocusTime",
-			c."excludeOutOfOffice"
+			c."excludeOutOfOffice",
+			c."excludeAvailabilities",
+			c."excludeTitleKeywords"
 		FROM "calendars" c
 		WHERE c."id" = "legacyCalendarId"
 	), "levels" AS (
@@ -157,7 +164,12 @@ AS $$
 		l."markEventsAsPrivate",
 		l."excludeAllDayEvents",
 		l."excludeFocusTime",
-		l."excludeOutOfOffice"
+		l."excludeOutOfOffice",
+		to_jsonb(ARRAY(
+			SELECT status FROM unnest(ARRAY['busy', 'free', 'tentative']) status
+			WHERE status = ANY(l."excludeAvailabilities")
+		)),
+		to_jsonb(l."excludeTitleKeywords")
 	FROM "levels" l
 $$;--> statement-breakpoint
 CREATE OR REPLACE FUNCTION keeper_legacy_sync_rules("earlierActions" jsonb)
@@ -194,7 +206,9 @@ SELECT
 	legacy."markPrivate",
 	legacy."skipAllDay",
 	legacy."skipFocusTime",
-	legacy."skipOutOfOffice"
+	legacy."skipOutOfOffice",
+	legacy."skipAvailabilities",
+	legacy."skipTitleKeywords"
 FROM "calendars" c
 INNER JOIN "calendar_accounts" a ON a."id" = c."accountId"
 CROSS JOIN LATERAL keeper_legacy_sync_settings(c."id") legacy
@@ -214,8 +228,8 @@ INNER JOIN "source_destination_mappings" back
 INNER JOIN "sync_calendar_settings" a ON a."id" = m."sourceCalendarId"
 INNER JOIN "sync_calendar_settings" b ON b."id" = m."destinationCalendarId"
 WHERE m."syncId" IS NULL
-	AND (a."shareAs", a."busyTitle", a."earlierActions", a."markPrivate", a."skipAllDay", a."skipFocusTime", a."skipOutOfOffice")
-		IS NOT DISTINCT FROM (b."shareAs", b."busyTitle", b."earlierActions", b."markPrivate", b."skipAllDay", b."skipFocusTime", b."skipOutOfOffice");--> statement-breakpoint
+	AND (a."shareAs", a."busyTitle", a."earlierActions", a."markPrivate", a."skipAllDay", a."skipFocusTime", a."skipOutOfOffice", a."skipAvailabilities", a."skipTitleKeywords")
+		IS NOT DISTINCT FROM (b."shareAs", b."busyTitle", b."earlierActions", b."markPrivate", b."skipAllDay", b."skipFocusTime", b."skipOutOfOffice", b."skipAvailabilities", b."skipTitleKeywords");--> statement-breakpoint
 CREATE INDEX ON "sync_mesh_edges" ("from", "to");--> statement-breakpoint
 DROP TABLE IF EXISTS "sync_mesh_degrees";--> statement-breakpoint
 CREATE TEMP TABLE "sync_mesh_degrees" AS
@@ -258,8 +272,8 @@ BEGIN
 			"meshName" := left("meshName", 79) || '…';
 		END IF;
 
-		INSERT INTO "syncs" ("id", "userId", "name", "mode", "shareAs", "busyTitle", "rules", "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice")
-		SELECT "meshId", s."userId", "meshName", 'both_ways', s."shareAs", s."busyTitle", keeper_legacy_sync_rules(s."earlierActions"), s."markPrivate", s."skipAllDay", s."skipFocusTime", s."skipOutOfOffice"
+		INSERT INTO "syncs" ("id", "userId", "name", "mode", "shareAs", "busyTitle", "rules", "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice", "skipAvailabilities", "skipTitleKeywords")
+		SELECT "meshId", s."userId", "meshName", 'both_ways', s."shareAs", s."busyTitle", keeper_legacy_sync_rules(s."earlierActions"), s."markPrivate", s."skipAllDay", s."skipFocusTime", s."skipOutOfOffice", s."skipAvailabilities", s."skipTitleKeywords"
 		FROM "sync_calendar_settings" s WHERE s."id" = "seed";
 
 		INSERT INTO "sync_calendars" ("syncId", "calendarId", "role", "position")
@@ -291,13 +305,15 @@ WITH "per_source" AS (
 		s."skipAllDay",
 		s."skipFocusTime",
 		s."skipOutOfOffice",
+		s."skipAvailabilities",
+		s."skipTitleKeywords",
 		array_agg(m."destinationCalendarId" ORDER BY d."name", m."destinationCalendarId") AS "destinations",
 		string_agg(d."name", ', ' ORDER BY d."name", m."destinationCalendarId") AS "destinationNames"
 	FROM "source_destination_mappings" m
 	INNER JOIN "sync_calendar_settings" s ON s."id" = m."sourceCalendarId"
 	INNER JOIN "sync_calendar_settings" d ON d."id" = m."destinationCalendarId"
 	WHERE m."syncId" IS NULL
-	GROUP BY s."id", s."userId", s."name", s."shareAs", s."busyTitle", s."earlierActions", s."markPrivate", s."skipAllDay", s."skipFocusTime", s."skipOutOfOffice"
+	GROUP BY s."id", s."userId", s."name", s."shareAs", s."busyTitle", s."earlierActions", s."markPrivate", s."skipAllDay", s."skipFocusTime", s."skipOutOfOffice", s."skipAvailabilities", s."skipTitleKeywords"
 )
 SELECT
 	gen_random_uuid() AS "syncId",
@@ -309,13 +325,15 @@ SELECT
 	"skipAllDay",
 	"skipFocusTime",
 	"skipOutOfOffice",
+	"skipAvailabilities",
+	"skipTitleKeywords",
 	"destinations",
 	array_agg("sourceCalendarId" ORDER BY "sourceName", "sourceCalendarId") AS "sources",
 	string_agg("sourceName", ', ' ORDER BY "sourceName", "sourceCalendarId") || ' → ' || "destinationNames" AS "name"
 FROM "per_source"
-GROUP BY "userId", "shareAs", "busyTitle", "earlierActions", "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice", "destinations", "destinationNames";--> statement-breakpoint
-INSERT INTO "syncs" ("id", "userId", "name", "mode", "shareAs", "busyTitle", "rules", "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice")
-SELECT "syncId", "userId", CASE WHEN length("name") > 80 THEN left("name", 79) || '…' ELSE "name" END, 'one_way', "shareAs", "busyTitle", keeper_legacy_sync_rules("earlierActions"), "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice"
+GROUP BY "userId", "shareAs", "busyTitle", "earlierActions", "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice", "skipAvailabilities", "skipTitleKeywords", "destinations", "destinationNames";--> statement-breakpoint
+INSERT INTO "syncs" ("id", "userId", "name", "mode", "shareAs", "busyTitle", "rules", "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice", "skipAvailabilities", "skipTitleKeywords")
+SELECT "syncId", "userId", CASE WHEN length("name") > 80 THEN left("name", 79) || '…' ELSE "name" END, 'one_way', "shareAs", "busyTitle", keeper_legacy_sync_rules("earlierActions"), "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice", "skipAvailabilities", "skipTitleKeywords"
 FROM "sync_backfill";--> statement-breakpoint
 INSERT INTO "sync_calendars" ("syncId", "calendarId", "role", "position")
 SELECT b."syncId", source."calendarId", 'source', source."ordinal" - 1
@@ -361,7 +379,7 @@ BEGIN
 
 	IF "owner" IS NULL THEN
 		"owner" := gen_random_uuid();
-		INSERT INTO "syncs" ("id", "userId", "name", "mode", "shareAs", "busyTitle", "rules", "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice")
+		INSERT INTO "syncs" ("id", "userId", "name", "mode", "shareAs", "busyTitle", "rules", "markPrivate", "skipAllDay", "skipFocusTime", "skipOutOfOffice", "skipAvailabilities", "skipTitleKeywords")
 		SELECT
 			"owner",
 			c."userId",
@@ -373,7 +391,9 @@ BEGIN
 			legacy."markPrivate",
 			legacy."skipAllDay",
 			legacy."skipFocusTime",
-			legacy."skipOutOfOffice"
+			legacy."skipOutOfOffice",
+			legacy."skipAvailabilities",
+			legacy."skipTitleKeywords"
 		FROM "calendars" c
 		CROSS JOIN "calendars" d
 		CROSS JOIN LATERAL keeper_legacy_sync_settings(c."id") legacy

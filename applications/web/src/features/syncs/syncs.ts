@@ -1,6 +1,7 @@
 import {
   SHARE_AS_RULE_ID,
   SKIP_ALL_DAY_RULE_ID,
+  SKIP_AVAILABILITY_RULE_ID,
   SKIP_FOCUS_TIME_RULE_ID,
   SKIP_KEYWORDS_RULE_ID,
   SKIP_OUT_OF_OFFICE_RULE_ID,
@@ -11,12 +12,14 @@ import {
 } from "@keeper.sh/data-schemas";
 import type {
   CompiledSyncRule,
+  RuleEventFacts,
   ShareAs,
   SyncCalendarRole,
   SyncCalendars,
   SyncChange,
   SyncConflict,
   SyncDefinition,
+  SyncAvailability,
   SyncSettings,
   SyncSkip,
   SyncState,
@@ -43,6 +46,12 @@ export const SKIP_LABELS: Record<SyncSkip, string> = {
   all_day: "All-day events",
   focus_time: "Focus time",
   out_of_office: "Out of office",
+};
+
+export const STATUS_LABELS: Record<SyncAvailability, string> = {
+  busy: "Busy",
+  free: "Free",
+  tentative: "Tentative",
 };
 
 export const calendarName = (calendarsById: CalendarsById, calendarId: string): string =>
@@ -133,10 +142,12 @@ export const describeConflicts = (conflicts: readonly SyncConflict[], calendarsB
 };
 
 export interface PreviewEvent {
+  availability?: "busy" | "free";
   description?: string;
   isAllDay?: boolean;
   isFocusTime?: boolean;
   isOutOfOffice?: boolean;
+  isTentative?: boolean;
   location?: string;
   time: string;
   title: string;
@@ -151,6 +162,11 @@ export const PREVIEW_EVENTS: PreviewEvent[] = [
 ];
 
 const OUT_OF_OFFICE_SAMPLE: PreviewEvent = { isOutOfOffice: true, time: "13:00 – 17:00", title: "Out of Office" };
+const STATUS_SAMPLES: Record<SyncAvailability, PreviewEvent> = {
+  busy: { time: "15:00 – 15:30", title: "Vendor Call" },
+  free: { availability: "free", time: "12:00 – 13:00", title: "Lunch" },
+  tentative: { isTentative: true, time: "16:00 – 16:30", title: "Coffee with Sam?" },
+};
 
 const sampleTitle = (keyword: string): string => keyword.charAt(0).toLocaleUpperCase() + keyword.slice(1);
 
@@ -161,6 +177,9 @@ export const previewEventsFor = (settings: SyncSettings): PreviewEvent[] => {
   for (const condition of compileSyncRules(settings).flatMap((rule) => rule.conditions)) {
     if (condition.kind === "out_of_office" && !events.some((event) => event.isOutOfOffice)) {
       events.push(OUT_OF_OFFICE_SAMPLE);
+    }
+    if ((condition.kind === "free" || condition.kind === "tentative") && !events.includes(STATUS_SAMPLES[condition.kind])) {
+      events.push(STATUS_SAMPLES[condition.kind]);
     }
     if (condition.kind !== "title_contains") continue;
     const keyword = condition.value.trim().toLocaleLowerCase();
@@ -186,10 +205,21 @@ export interface SyncPreview {
   followsShareAs: boolean;
 }
 
-const NEVER_COPY_RULE_IDS = new Set([SKIP_ALL_DAY_RULE_ID, SKIP_FOCUS_TIME_RULE_ID, SKIP_OUT_OF_OFFICE_RULE_ID, SKIP_KEYWORDS_RULE_ID]);
+const NEVER_COPY_RULE_IDS = new Set([
+  SKIP_ALL_DAY_RULE_ID,
+  SKIP_AVAILABILITY_RULE_ID,
+  SKIP_FOCUS_TIME_RULE_ID,
+  SKIP_OUT_OF_OFFICE_RULE_ID,
+  SKIP_KEYWORDS_RULE_ID,
+]);
 
-const describeDecider = (rule: CompiledSyncRule | null, shareAs: ShareAs, title: string): string => {
+const describeDecider = (rule: CompiledSyncRule | null, shareAs: ShareAs, facts: RuleEventFacts): string => {
+  const { title } = facts;
   if (!rule || rule.id === SHARE_AS_RULE_ID) return `Share As · ${shareAsLabel(shareAs)}`;
+  if (rule.id === SKIP_AVAILABILITY_RULE_ID) {
+    const status = rule.conditions.find((condition) => findMatchingRule([{ conditions: [condition] }], facts));
+    if (status && status.kind in STATUS_LABELS) return `Never Copy · ${STATUS_LABELS[status.kind as SyncAvailability]} events`;
+  }
   if (rule.id === SKIP_KEYWORDS_RULE_ID) {
     const keyword = rule.conditions.find((condition) =>
       condition.kind === "title_contains" && title.toLocaleLowerCase().includes(condition.value.toLocaleLowerCase()));
@@ -202,17 +232,19 @@ const describeDecider = (rule: CompiledSyncRule | null, shareAs: ShareAs, title:
 // Runs the same compiled rules the sync engine uses, so the preview can't drift from what gets copied.
 export const previewSync = (settings: SyncSettings, event: PreviewEvent, calendar: string): SyncPreview => {
   const rules = compileSyncRules(settings);
-  const facts = {
+  const facts: RuleEventFacts = {
+    availability: event.availability ?? "busy",
     calendarName: calendar,
     description: event.description,
     isAllDay: Boolean(event.isAllDay),
     isFocusTime: Boolean(event.isFocusTime),
     isOutOfOffice: Boolean(event.isOutOfOffice),
+    isTentative: Boolean(event.isTentative),
     location: event.location,
     title: event.title,
   };
   const decider = findMatchingRule(rules, facts);
-  const decidedBy = describeDecider(decider, settings.shareAs, event.title);
+  const decidedBy = describeDecider(decider, settings.shareAs, facts);
   const followsShareAs = !decider || decider.id === SHARE_AS_RULE_ID;
   const evaluation = evaluateRules(rules, facts);
   if (evaluation.skip) return { copy: null, decidedBy, dropped: [], followsShareAs };
@@ -249,6 +281,7 @@ export const describeChange = (change: SyncChange, calendarsById: CalendarsById)
     case "busy_title_changed": return "Busy title changed.";
     case "private_changed": return change.to ? "Copies are now private." : "Copies are no longer private.";
     case "skip_changed": return `${change.to ? "Skipping" : "No longer skipping"} ${SKIP_LABELS[change.skip].toLowerCase()}.`;
+    case "status_skip_changed": return `${change.to ? "Skipping" : "No longer skipping"} ${STATUS_LABELS[change.status].toLowerCase()} events.`;
     case "keyword_added": return `Skipping events titled “${change.keyword}”.`;
     case "keyword_removed": return `No longer skipping events titled “${change.keyword}”.`;
     case "calendar_added": return `Added ${calendarName(calendarsById, change.calendarId)} as ${ROLE_WORDS[change.role]}.`;
@@ -265,6 +298,7 @@ export const syncSettingsOf = (sync: SyncDefinition): SyncSettings => ({
   rules: sync.rules,
   shareAs: sync.shareAs,
   skipAllDay: sync.skipAllDay,
+  skipAvailabilities: sync.skipAvailabilities,
   skipFocusTime: sync.skipFocusTime,
   skipOutOfOffice: sync.skipOutOfOffice,
   skipTitleKeywords: sync.skipTitleKeywords,

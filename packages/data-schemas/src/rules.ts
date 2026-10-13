@@ -15,7 +15,7 @@ const ruleConditionSchema = type({
   value: ruleConditionValueSchema,
   "+": "reject",
 }).or({
-  kind: "'all_day' | 'timed' | 'focus_time' | 'out_of_office'",
+  kind: "'all_day' | 'timed' | 'focus_time' | 'out_of_office' | 'busy' | 'free' | 'tentative'",
   "+": "reject",
 });
 type RuleCondition = typeof ruleConditionSchema.infer;
@@ -43,11 +43,14 @@ const ruleNameSchema = type(`string <= ${RULE_NAME_MAX_LENGTH}`).narrow(
 );
 
 interface RuleEventFacts {
+  // How the event shows: an event with no stored availability counts as busy.
+  availability: string;
   calendarName: string | null;
   description?: string;
   isAllDay: boolean;
   isFocusTime: boolean;
   isOutOfOffice: boolean;
+  isTentative: boolean;
   location?: string;
   title: string;
 }
@@ -79,8 +82,12 @@ const CONDITION_MATCHERS: Record<
   (condition: RuleCondition, facts: RuleEventFacts) => boolean
 > = {
   all_day: (_condition, facts) => facts.isAllDay,
+  // A tentative event is Tentative rather than Busy, but still Free when it shows as free.
+  busy: (_condition, facts) => !facts.isTentative && facts.availability === "busy",
   focus_time: (_condition, facts) => facts.isFocusTime,
+  free: (_condition, facts) => facts.availability === "free",
   out_of_office: (_condition, facts) => facts.isOutOfOffice,
+  tentative: (_condition, facts) => facts.isTentative,
   timed: (_condition, facts) => !facts.isAllDay,
   title_contains: (condition, facts) =>
     condition.kind === "title_contains"
