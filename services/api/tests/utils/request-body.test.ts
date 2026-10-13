@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { type } from "arktype";
 import {
+  MAX_EXCLUDE_TITLE_KEYWORDS,
+  MAX_EXCLUDE_TITLE_KEYWORD_LENGTH,
+} from "@keeper.sh/data-schemas";
+import {
   calendarIdsBodySchema,
   sourcePatchBodySchema,
   icalSettingsPatchBodySchema,
@@ -71,11 +75,49 @@ describe("sourcePatchBodySchema", () => {
     expect(result instanceof type.errors).toBe(false);
   });
 
-  it("accepts excludeFreeEvents as boolean", () => {
+  it("accepts excluded statuses", () => {
+    const result = sourcePatchBodySchema({ excludeAvailabilities: ["busy", "free", "tentative"] });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  it("accepts excludeFreeEvents from clients loaded before excluded statuses", () => {
     const result = sourcePatchBodySchema({ excludeFreeEvents: true });
     expect(result instanceof type.errors).toBe(false);
   });
 
+  it("rejects statuses that cannot be excluded", () => {
+    const result = sourcePatchBodySchema({ excludeAvailabilities: ["workingElsewhere"] });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  it("accepts title keywords at their limits", () => {
+    const result = sourcePatchBodySchema({
+      excludeTitleKeywords: Array.from(
+        { length: MAX_EXCLUDE_TITLE_KEYWORDS },
+        () => "x".repeat(MAX_EXCLUDE_TITLE_KEYWORD_LENGTH),
+      ),
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  it("rejects an empty title keyword", () => {
+    const result = sourcePatchBodySchema({ excludeTitleKeywords: [""] });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  it(`rejects more than ${MAX_EXCLUDE_TITLE_KEYWORDS} title keywords`, () => {
+    const result = sourcePatchBodySchema({
+      excludeTitleKeywords: Array.from({ length: MAX_EXCLUDE_TITLE_KEYWORDS + 1 }, () => "x"),
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  it(`rejects title keywords longer than ${MAX_EXCLUDE_TITLE_KEYWORD_LENGTH} characters`, () => {
+    const result = sourcePatchBodySchema({
+      excludeTitleKeywords: ["x".repeat(MAX_EXCLUDE_TITLE_KEYWORD_LENGTH + 1)],
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
 
   it("rejects extra properties", () => {
     const result = sourcePatchBodySchema({ name: "ok", hacker: true });

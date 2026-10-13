@@ -673,6 +673,20 @@
       "when": 1791906001909,
       "tag": "0095_mark_existing_oauth_clients_legacy",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1791915609113,
+      "tag": "0096_complex_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1791915616003,
+      "tag": "0097_tough_morbius",
+      "breakpoints": true
     }
   ]
 }

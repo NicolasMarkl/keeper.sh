@@ -375,6 +375,7 @@ const createIcsSourceFetcher = (config: IcsSourceFetcherConfig): IcsSourceFetche
       location: event.location,
       recurrenceDuration: event.recurrenceDuration,
       recurrenceRule: event.recurrenceRule,
+      sourceEventType: event.sourceEventType,
       startTime: event.startTime,
       startTimeZone: event.startTimeZone,
       title: event.title,

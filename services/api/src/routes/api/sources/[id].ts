@@ -36,12 +36,13 @@ const GET = withWideEvent(
         calendarUrl: calendarsTable.calendarUrl,
         customEventName: calendarsTable.customEventName,
         excludeAllDayEvents: calendarsTable.excludeAllDayEvents,
+        excludeAvailabilities: calendarsTable.excludeAvailabilities,
         excludeEventDescription: calendarsTable.excludeEventDescription,
         excludeEventLocation: calendarsTable.excludeEventLocation,
         excludeEventName: calendarsTable.excludeEventName,
         excludeFocusTime: calendarsTable.excludeFocusTime,
-        excludeFreeEvents: calendarsTable.excludeFreeEvents,
         excludeOutOfOffice: calendarsTable.excludeOutOfOffice,
+        excludeTitleKeywords: calendarsTable.excludeTitleKeywords,
         syncFutureRange: calendarsTable.syncFutureRange,
         syncHistoricRange: calendarsTable.syncHistoricRange,
         treatFullDayTimedEventsAsAllDay: calendarsTable.treatFullDayTimedEventsAsAllDay,
@@ -81,6 +82,12 @@ const GET = withWideEvent(
   }),
 );
 
+const SYNC_REQUESTING_FIELDS = [
+  "markEventsAsPrivate",
+  "excludeAvailabilities",
+  "excludeTitleKeywords",
+] as const;
+
 const PATCH = withWideEvent(
   withAuth(async ({ request, params, userId }) => {
     const payload = await request.json();
@@ -88,6 +95,21 @@ const PATCH = withWideEvent(
       { body: payload, params, userId },
       {
         canUseEventFilters: (candidateUserId) => premiumService.canUseEventFilters(candidateUserId),
+        getSourceExclusionState: async (userIdToRead, sourceCalendarId) => {
+          const [source] = await database
+            .select({
+              excludeAvailabilities: calendarsTable.excludeAvailabilities,
+              provider: calendarAccountsTable.provider,
+            })
+            .from(calendarsTable)
+            .innerJoin(calendarAccountsTable, eq(calendarsTable.accountId, calendarAccountsTable.id))
+            .where(and(
+              eq(calendarsTable.id, sourceCalendarId),
+              eq(calendarsTable.userId, userIdToRead),
+            ))
+            .limit(1);
+          return source ?? null;
+        },
         updateSource: async (userIdToUpdate, sourceCalendarId, updates) => {
           const applyFeedMembership = async (
             client: FeedMembershipClient,
@@ -130,7 +152,9 @@ const PATCH = withWideEvent(
                     ),
                   )
                   .returning();
-                if (updated?.capabilities.includes("push")) {
+                const requestsSync = updated?.capabilities.includes("push")
+                  || SYNC_REQUESTING_FIELDS.some((field) => field in updates);
+                if (updated && requestsSync) {
                   await requestUserSync(transaction, userIdToUpdate);
                 }
                 await applyFeedMembership(transaction, updated ?? null);
@@ -154,7 +178,7 @@ const PATCH = withWideEvent(
                 ),
               )
               .returning();
-            if (updated && ("markEventsAsPrivate" in updates || "excludeFreeEvents" in updates)) {
+            if (updated && SYNC_REQUESTING_FIELDS.some((field) => field in updates)) {
               await requestUserSync(transaction, userIdToUpdate);
             }
             await applyFeedMembership(transaction, updated ?? null);

@@ -99,7 +99,12 @@ const parseSourceEventType = (
   value: string | null,
   availability: string | null,
 ): SourceEventType => {
-  if (value === "focusTime" || value === "outOfOffice" || value === "workingLocation") {
+  if (
+    value === "focusTime"
+    || value === "outOfOffice"
+    || value === "tentative"
+    || value === "workingLocation"
+  ) {
     return value;
   }
 
@@ -114,15 +119,48 @@ const parseSourceEventType = (
   return "default";
 };
 
-const shouldExcludeSyncEvent = (event: {
+const isExcludedAvailability = (
+  excludeAvailabilities: string[],
+  sourceEventType: SourceEventType,
+  availability: string | null,
+): boolean => {
+  const resolved = parseAvailability(availability) ?? "busy";
+  if (sourceEventType !== "tentative") {
+    return excludeAvailabilities.includes(resolved);
+  }
+  if (excludeAvailabilities.includes("tentative")) {
+    return true;
+  }
+  return resolved === "free" && excludeAvailabilities.includes("free");
+};
+
+const lowercaseKeywords = (keywords: string[]): string[] =>
+  keywords.map((keyword) => keyword.toLowerCase());
+
+const titleContainsKeyword = (title: string | null, lowercasedKeywords: string[]): boolean => {
+  if (!title || lowercasedKeywords.length === 0) {
+    return false;
+  }
+  const normalizedTitle = title.toLowerCase();
+  return lowercasedKeywords.some((keyword) => normalizedTitle.includes(keyword));
+};
+
+interface SyncExclusionInput {
   excludeAllDayEvents: boolean;
+  excludeAvailabilities: string[];
   excludeFocusTime: boolean;
-  excludeFreeEvents: boolean;
   excludeOutOfOffice: boolean;
+  excludeTitleKeywords: string[];
   availability: string | null;
   isAllDay: boolean | null;
   sourceEventType: string | null;
-}): boolean => {
+  title: string | null;
+}
+
+const matchesSyncExclusion = (
+  event: Omit<SyncExclusionInput, "excludeTitleKeywords">,
+  lowercasedTitleKeywords: string[],
+): boolean => {
   const sourceEventType = parseSourceEventType(event.sourceEventType, event.availability);
 
   if (sourceEventType === "workingLocation") {
@@ -137,12 +175,19 @@ const shouldExcludeSyncEvent = (event: {
   if (event.excludeOutOfOffice && sourceEventType === "outOfOffice") {
     return true;
   }
-  if (event.excludeFreeEvents && event.availability === "free") {
+  if (isExcludedAvailability(event.excludeAvailabilities, sourceEventType, event.availability)) {
+    return true;
+  }
+  if (titleContainsKeyword(event.title, lowercasedTitleKeywords)) {
     return true;
   }
 
   return false;
 };
+
+const shouldExcludeSyncEvent = (event: SyncExclusionInput): boolean =>
+  matchesSyncExclusion(event, lowercaseKeywords(event.excludeTitleKeywords));
+
 const TEMPLATE_TOKEN_PATTERN = /\{\{(\w+)\}\}/g;
 const DEFAULT_EVENT_NAME = "Busy";
 const DEFAULT_EVENT_NAME_TEMPLATE = "{{calendar_name}}";
@@ -189,12 +234,13 @@ const getEventsForCalendarsWithDiagnostics = async (
       calendarUrl: calendarsTable.url,
       customEventName: calendarsTable.customEventName,
       excludeAllDayEvents: calendarsTable.excludeAllDayEvents,
+      excludeAvailabilities: calendarsTable.excludeAvailabilities,
       excludeEventDescription: calendarsTable.excludeEventDescription,
       excludeEventLocation: calendarsTable.excludeEventLocation,
       excludeEventName: calendarsTable.excludeEventName,
       excludeFocusTime: calendarsTable.excludeFocusTime,
-      excludeFreeEvents: calendarsTable.excludeFreeEvents,
       excludeOutOfOffice: calendarsTable.excludeOutOfOffice,
+      excludeTitleKeywords: calendarsTable.excludeTitleKeywords,
       markEventsAsPrivate: calendarsTable.markEventsAsPrivate,
       availability: eventStatesTable.availability,
       description: eventStatesTable.description,
@@ -228,17 +274,38 @@ const getEventsForCalendarsWithDiagnostics = async (
     .orderBy(asc(eventStatesTable.startTime));
 
   const syncableEvents: SyncableEvent[] = [];
+  const excludedOverrides: Pick<SyncableEvent, "calendarId" | "recurrenceId" | "sourceEventUid">[] = [];
   let excludedBySyncPolicyCount = 0;
   let missingSourceEventUidCount = 0;
   let outsideReconciliationWindowCount = 0;
+  const lowercasedTitleKeywordsByCalendar = new Map<string, string[]>();
+  const getLowercasedTitleKeywords = (calendarId: string, keywords: string[]): string[] => {
+    const cached = lowercasedTitleKeywordsByCalendar.get(calendarId);
+    if (cached) {
+      return cached;
+    }
+    const lowercased = lowercaseKeywords(keywords);
+    lowercasedTitleKeywordsByCalendar.set(calendarId, lowercased);
+    return lowercased;
+  };
 
   for (const result of results) {
     if (result.sourceEventUid === null) {
       missingSourceEventUidCount += 1;
       continue;
     }
-    if (shouldExcludeSyncEvent(result)) {
+    if (matchesSyncExclusion(
+      result,
+      getLowercasedTitleKeywords(result.calendarId, result.excludeTitleKeywords),
+    )) {
       excludedBySyncPolicyCount += 1;
+      if (result.recurrenceId) {
+        excludedOverrides.push({
+          calendarId: result.calendarId,
+          recurrenceId: result.recurrenceId,
+          sourceEventUid: result.sourceEventUid,
+        });
+      }
       continue;
     }
 
@@ -305,6 +372,7 @@ const getEventsForCalendarsWithDiagnostics = async (
       overBudgetSourceEventUids.push(error.sourceEventUid);
       overBudgetSourceEventStateIds.push(error.eventStateId ?? error.eventId);
     },
+    suppressedOverrides: excludedOverrides,
   });
 
   const emptyTimeRangeCount = events.filter((event) => isEmptyTimeRange(event)).length;

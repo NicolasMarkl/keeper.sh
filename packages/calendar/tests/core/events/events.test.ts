@@ -6,20 +6,24 @@ import {
 
 const createEvent = (overrides: Partial<{
   excludeAllDayEvents: boolean;
+  excludeAvailabilities: string[];
   excludeFocusTime: boolean;
-  excludeFreeEvents: boolean;
   excludeOutOfOffice: boolean;
+  excludeTitleKeywords: string[];
   availability: string | null;
   isAllDay: boolean | null;
   sourceEventType: string | null;
+  title: string | null;
 }> = {}) => ({
   availability: "busy",
   excludeAllDayEvents: false,
+  excludeAvailabilities: [],
   excludeFocusTime: false,
-  excludeFreeEvents: false,
   excludeOutOfOffice: false,
+  excludeTitleKeywords: [],
   isAllDay: false,
   sourceEventType: "default",
+  title: "Weekly planning",
   ...overrides,
 });
 
@@ -67,25 +71,6 @@ describe("shouldExcludeSyncEvent", () => {
     ).toBe(true);
   });
 
-  it("excludes events marked free when configured", () => {
-    expect(
-      shouldExcludeSyncEvent(
-        createEvent({
-          availability: "free",
-          excludeFreeEvents: true,
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  it("keeps events marked free in sync by default", () => {
-    expect(shouldExcludeSyncEvent(createEvent({ availability: "free" }))).toBe(false);
-  });
-
-  it("keeps busy events in sync when excluding free events", () => {
-    expect(shouldExcludeSyncEvent(createEvent({ excludeFreeEvents: true }))).toBe(false);
-  });
-
   it("keeps default events in sync", () => {
     expect(shouldExcludeSyncEvent(createEvent())).toBe(false);
   });
@@ -99,6 +84,110 @@ describe("shouldExcludeSyncEvent", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("excludes events whose availability is an excluded status", () => {
+    expect(
+      shouldExcludeSyncEvent(
+        createEvent({
+          availability: "free",
+          excludeAvailabilities: ["free"],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps events whose availability is not an excluded status", () => {
+    expect(shouldExcludeSyncEvent(createEvent({ excludeAvailabilities: ["free"] }))).toBe(false);
+  });
+
+  it("treats events without a stored availability as busy", () => {
+    expect(
+      shouldExcludeSyncEvent(
+        createEvent({
+          availability: null,
+          excludeAvailabilities: ["busy"],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("excludes tentative events when tentative is an excluded status", () => {
+    expect(
+      shouldExcludeSyncEvent(
+        createEvent({
+          excludeAvailabilities: ["tentative"],
+          sourceEventType: "tentative",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("excludes free tentative events when only free is excluded", () => {
+    expect(
+      shouldExcludeSyncEvent(
+        createEvent({
+          availability: "free",
+          excludeAvailabilities: ["free"],
+          sourceEventType: "tentative",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps busy tentative events when only free is excluded", () => {
+    expect(
+      shouldExcludeSyncEvent(
+        createEvent({
+          excludeAvailabilities: ["free"],
+          sourceEventType: "tentative",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps tentative events when only busy is excluded", () => {
+    expect(
+      shouldExcludeSyncEvent(
+        createEvent({
+          excludeAvailabilities: ["busy"],
+          sourceEventType: "tentative",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("excludes events whose title contains any of the keywords, ignoring case", () => {
+    expect(
+      shouldExcludeSyncEvent(
+        createEvent({
+          excludeTitleKeywords: ["placeholder", "ZOOM room"],
+          title: "Daily Zoom ROOM",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps events whose title contains none of the keywords", () => {
+    expect(
+      shouldExcludeSyncEvent(
+        createEvent({
+          excludeTitleKeywords: ["zoom room", "placeholder"],
+          title: "Weekly planning",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps untitled events when keywords are configured", () => {
+    expect(
+      shouldExcludeSyncEvent(
+        createEvent({
+          excludeTitleKeywords: ["zoom room"],
+          title: null,
+        }),
+      ),
+    ).toBe(false);
   });
 
   it("treats legacy oof rows as out of office", () => {

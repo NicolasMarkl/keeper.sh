@@ -3,7 +3,12 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import useSWR, { preload, useSWRConfig } from "swr";
 import CheckIcon from "lucide-react/dist/esm/icons/check";
 import { useAtomValue, useStore } from "jotai";
-import type { SyncRange } from "@keeper.sh/data-schemas";
+import {
+  MAX_EXCLUDE_TITLE_KEYWORDS,
+  MAX_EXCLUDE_TITLE_KEYWORD_LENGTH,
+  getExcludableAvailabilities,
+} from "@keeper.sh/data-schemas";
+import type { ExcludableAvailability, SyncRange } from "@keeper.sh/data-schemas";
 import { useEntitlements, useMutateEntitlements, canAddMore } from "@/hooks/use-entitlements";
 import { BackButton } from "@/components/ui/primitives/back-button";
 import { PageBody } from "@/components/ui/primitives/page-body";
@@ -22,7 +27,14 @@ import { serializedPatch, serializedCall } from "@/lib/serialized-mutate";
 import { invalidateAccountsAndSources } from "@/lib/swr";
 import { formatDate } from "@/lib/time";
 import { resolveErrorMessage } from "@/utils/errors";
-import { canPull, canPush } from "@/utils/calendars";
+import {
+  areTitleKeywordsEqual,
+  canPull,
+  canPush,
+  formatTitleKeywords,
+  parseTitleKeywords,
+  toggleExcludedAvailability,
+} from "@/utils/calendars";
 import type { CalendarAccount, CalendarDetail, CalendarSource } from "@/types/api";
 import {
   NavigationMenu,
@@ -60,8 +72,10 @@ import {
   calendarProviderMissingSinceAtom,
   calendarTypeAtom,
   customEventNameAtom,
+  excludeAvailabilitiesAtom,
   excludeEventNameAtom,
   excludeFieldAtoms,
+  excludeTitleKeywordsAtom,
   treatFullDayTimedEventsAsAllDayAtom,
 } from "@/state/calendar-detail";
 import type { ExcludeField } from "@/state/calendar-detail";
@@ -95,7 +109,6 @@ const SYNC_SETTINGS: SyncSetting[] = [
 
 const EXCLUSION_SETTINGS: SyncSetting[] = [
   { field: "excludeAllDayEvents", label: "Exclude All Day Events", matchesField: true },
-  { field: "excludeFreeEvents", label: "Exclude Events Marked Free", matchesField: true },
 ];
 
 const PROVIDER_EXCLUSION_SETTINGS: SyncSetting[] = [
@@ -850,7 +863,7 @@ function ExclusionsSection({ calendarId, provider }: { calendarId: string; provi
     <>
       <DashboardSection
         title="Exclusions"
-        description="Choose which event types to exclude from syncing."
+        description={`Choose which events to exclude from syncing. Separate title keywords with commas. Up to ${MAX_EXCLUDE_TITLE_KEYWORDS} keywords of ${MAX_EXCLUDE_TITLE_KEYWORD_LENGTH} characters each, matched ignoring case.`}
       />
       <PremiumGate locked={locked} hint="Event exclusions are a Pro feature.">
         <NavigationMenu>
@@ -864,9 +877,112 @@ function ExclusionsSection({ calendarId, provider }: { calendarId: string; provi
               locked={locked}
             />
           ))}
+          <ExcludeAvailabilitiesItem calendarId={calendarId} provider={provider} locked={locked} />
+          <ExcludeTitleKeywordsItem calendarId={calendarId} locked={locked} />
         </NavigationMenu>
       </PremiumGate>
     </>
+  );
+}
+
+function ExcludeAvailabilitiesItem({
+  calendarId,
+  provider,
+  locked,
+}: {
+  calendarId: string;
+  provider: string;
+  locked: boolean;
+}) {
+  const store = useStore();
+  const excluded = useAtomValue(excludeAvailabilitiesAtom);
+  const options = getExcludableAvailabilities(provider);
+
+  const toggleAvailability = (availability: ExcludableAvailability) => {
+    if (locked) return;
+    const excludeAvailabilities = toggleExcludedAvailability(excluded, availability);
+    track(ANALYTICS_EVENTS.calendar_setting_toggled, {
+      field: "excludeAvailabilities",
+      value: availability,
+      enabled: excludeAvailabilities.includes(availability),
+    });
+    store.set(calendarDetailAtom, (prev) => (prev ? { ...prev, excludeAvailabilities } : prev));
+    patchSource(store, calendarId, { excludeAvailabilities });
+  };
+
+  const summary = options
+    .filter(({ value }) => excluded.includes(value))
+    .map(({ label }) => label)
+    .join(", ");
+
+  return (
+    <NavigationMenuPopover
+      disabled={locked}
+      trigger={
+        <>
+          <NavigationMenuItemLabel>Exclude by Status</NavigationMenuItemLabel>
+          <NavigationMenuItemTrailing>
+            <Text size="sm" tone={locked ? "disabled" : "muted"}>
+              {summary || "None"}
+            </Text>
+          </NavigationMenuItemTrailing>
+        </>
+      }
+    >
+      {options.map((option) => (
+        <NavigationMenuButtonItem
+          key={option.value}
+          onClick={() => toggleAvailability(option.value)}
+        >
+          <NavigationMenuItemLabel>{option.label}</NavigationMenuItemLabel>
+          <NavigationMenuItemTrailing>
+            {excluded.includes(option.value) && <CheckIcon size={14} />}
+          </NavigationMenuItemTrailing>
+        </NavigationMenuButtonItem>
+      ))}
+    </NavigationMenuPopover>
+  );
+}
+
+function ExcludeTitleKeywordsItem({ calendarId, locked }: { calendarId: string; locked: boolean }) {
+  const store = useStore();
+  const keywords = useAtomValue(excludeTitleKeywordsAtom);
+
+  return (
+    <NavigationMenuEditableItem
+      label="Exclude Titles Containing"
+      value={formatTitleKeywords(keywords)}
+      disabled={locked}
+      allowEmpty
+      onCommit={(value) => {
+        const excludeTitleKeywords = parseTitleKeywords(value);
+        if (areTitleKeywordsEqual(excludeTitleKeywords, store.get(excludeTitleKeywordsAtom))) return;
+        track(ANALYTICS_EVENTS.calendar_setting_toggled, {
+          field: "excludeTitleKeywords",
+          enabled: excludeTitleKeywords.length > 0,
+        });
+        store.set(calendarDetailAtom, (prev) => (prev ? { ...prev, excludeTitleKeywords } : prev));
+        patchSource(store, calendarId, { excludeTitleKeywords });
+      }}
+    >
+      <ExcludeTitleKeywordsValue />
+    </NavigationMenuEditableItem>
+  );
+}
+
+function ExcludeTitleKeywordsValue() {
+  const keywords = useAtomValue(excludeTitleKeywordsAtom);
+  const variant = use(MenuVariantContext);
+  const disabled = use(ItemDisabledContext);
+
+  return (
+    <Text
+      size="sm"
+      tone={(disabled ? DISABLED_LABEL_TONE : LABEL_TONE)[variant ?? "default"]}
+      className="min-w-0 flex-1 truncate text-right"
+    >
+      {keywords.length > 0 ? formatTitleKeywords(keywords) : "None"}
+    </Text>
   );
 }
 

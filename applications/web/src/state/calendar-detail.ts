@@ -1,5 +1,6 @@
 import { atom } from "jotai";
 import { selectAtom } from "jotai/utils";
+import type { ExcludableAvailability } from "@keeper.sh/data-schemas";
 import type { CalendarDetail } from "@/types/api";
 
 export const calendarDetailAtom = atom<CalendarDetail | null>(null);
@@ -16,8 +17,11 @@ export const excludeEventDescriptionAtom = selectAtom(calendarDetailAtom, (detai
 export const excludeEventLocationAtom = selectAtom(calendarDetailAtom, (detail) => detail?.excludeEventLocation ?? false);
 export const excludeAllDayEventsAtom = selectAtom(calendarDetailAtom, (detail) => detail?.excludeAllDayEvents ?? false);
 export const excludeFocusTimeAtom = selectAtom(calendarDetailAtom, (detail) => detail?.excludeFocusTime ?? false);
-export const excludeFreeEventsAtom = selectAtom(calendarDetailAtom, (detail) => detail?.excludeFreeEvents ?? false);
 export const excludeOutOfOfficeAtom = selectAtom(calendarDetailAtom, (detail) => detail?.excludeOutOfOffice ?? false);
+const NO_AVAILABILITIES: ExcludableAvailability[] = [];
+export const excludeAvailabilitiesAtom = selectAtom(calendarDetailAtom, (detail) => detail?.excludeAvailabilities ?? NO_AVAILABILITIES);
+const NO_TITLE_KEYWORDS: string[] = [];
+export const excludeTitleKeywordsAtom = selectAtom(calendarDetailAtom, (detail) => detail?.excludeTitleKeywords ?? NO_TITLE_KEYWORDS);
 export const treatFullDayTimedEventsAsAllDayAtom = selectAtom(calendarDetailAtom, (detail) => detail?.treatFullDayTimedEventsAsAllDay ?? false);
 export const calendarProviderMissingSinceAtom = selectAtom(calendarDetailAtom, (detail) => detail?.providerMissingSince ?? null);
 export const markEventsAsPrivateAtom = selectAtom(calendarDetailAtom, (detail) => detail?.markEventsAsPrivate ?? false);
@@ -28,7 +32,6 @@ export type ExcludeField = keyof Pick<
   | "excludeEventLocation"
   | "excludeEventName"
   | "excludeFocusTime"
-  | "excludeFreeEvents"
   | "excludeOutOfOffice"
   | "markEventsAsPrivate"
 >;
@@ -39,7 +42,6 @@ export const excludeFieldAtoms = {
   excludeEventLocation: excludeEventLocationAtom,
   excludeAllDayEvents: excludeAllDayEventsAtom,
   excludeFocusTime: excludeFocusTimeAtom,
-  excludeFreeEvents: excludeFreeEventsAtom,
   excludeOutOfOffice: excludeOutOfOfficeAtom,
   markEventsAsPrivate: markEventsAsPrivateAtom,
 } as const;
